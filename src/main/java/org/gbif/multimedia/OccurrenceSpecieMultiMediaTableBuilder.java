@@ -3,10 +3,12 @@ package org.gbif.multimedia;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
-import java.util.ArrayList;
-import java.util.Iterator;
-import java.util.List;
+import java.util.*;
+import java.util.stream.Collectors;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import lombok.SneakyThrows;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hbase.HBaseConfiguration;
@@ -50,9 +52,11 @@ public class OccurrenceSpecieMultiMediaTableBuilder {
   private static final String COLUMN_FAMILY = "media"; // HBase CF
   private static final int BATCH_PUT_SIZE = 1000;      // tune per cluster
 
-  private static final int MAX_IDENTIFIERS_PER_CELL = 1000;
+  private static final int MAX_MEDIAINFOS_PER_CELL = 1000;
 
   private static final int DEFAULT_PARTITIONS = 200;
+
+  private static final ObjectMapper MAPPER = new ObjectMapper();
 
 
   public static void main(String[] args) throws Exception {
@@ -93,8 +97,6 @@ public class OccurrenceSpecieMultiMediaTableBuilder {
     //3. Write to HBase per partition
     log.info("Writing to HBase table: {}", hbaseTable);
     spark.sparkContext().setJobGroup("hbase-write", "Writing the aggregated multimedia identifiers to HBase table " + hbaseTable, true);
-    // You can tune WriteBufferSize here:
-
 
     rdd.foreachPartition((VoidFunction<Iterator<Row>>) rows -> {
       BufferedMutatorParams params = new BufferedMutatorParams(TableName.valueOf(hbaseTable));
@@ -105,23 +107,24 @@ public class OccurrenceSpecieMultiMediaTableBuilder {
 
         List<Put> batch = new ArrayList<>(BATCH_PUT_SIZE);
         SaltedKeyGenerator saltedKeyGenerator = new SaltedKeyGenerator(saltBuckets);
-        byte[] identifiersQualifier = Bytes.toBytes("identifiers");
-        byte[] identifiersCountQualifier = Bytes.toBytes("identifiers_count");
-        byte[] totalIdentifiersCountQualifier = Bytes.toBytes("total_identifiers_count");
+        byte[] mediaInfosQualifier = Bytes.toBytes("media_infos");
+        byte[] multimediaCountQualifier = Bytes.toBytes("multimedia_count");
+        byte[] totalMultimediaCountQualifier = Bytes.toBytes("total_multimedia_count");
         while (rows.hasNext()) {
 
           Row r = rows.next();
           String speciesKey = r.getAs("speciesKey");
           String mediaType = r.getAs("type");
-          List<String> identifiers = r.getList(r.fieldIndex("identifiers"));
+          // Serialize mediaInfos to JSON array
+          List<Row> mediaInfos = r.getList(r.fieldIndex("mediaInfos"));
 
           // Use a fixed qualifier, e.g., "identifiers"
 
 
-          for (int i = 0; i < identifiers.size(); i += MAX_IDENTIFIERS_PER_CELL) {
+          for (int i = 0; i < mediaInfos.size(); i += MAX_MEDIAINFOS_PER_CELL) {
 
             // Append a postfix to the row key if there are multiple cells for the same speciesKey+mediaType
-            String identifierPostKey = identifiers.size() > MAX_IDENTIFIERS_PER_CELL ? ("#" + (i / MAX_IDENTIFIERS_PER_CELL)) : "";
+            String identifierPostKey = mediaInfos.size() > MAX_MEDIAINFOS_PER_CELL ? ("#" + (i / MAX_MEDIAINFOS_PER_CELL)) : "";
 
             byte[] keyPrefix = saltedKeyGenerator.computeKey(speciesKey + mediaType);
             byte[] postKeyBytes = identifierPostKey.getBytes(StandardCharsets.UTF_8);
@@ -131,15 +134,19 @@ public class OccurrenceSpecieMultiMediaTableBuilder {
             System.arraycopy(keyPrefix, 0, rowKeyBytes, 0, keyPrefix.length);
             System.arraycopy(postKeyBytes, 0, rowKeyBytes, keyPrefix.length, postKeyBytes.length);
 
-            List<String> chunk = identifiers.subList(i, Math.min(i + MAX_IDENTIFIERS_PER_CELL, identifiers.size()));
+            List<Row> chunk = mediaInfos.subList(i, Math.min(i + MAX_MEDIAINFOS_PER_CELL, mediaInfos.size()));
 
-            // Join identifiers as comma-separated string
-            String identifiersStr = String.join(",", chunk);
-            byte[] value = identifiersStr.getBytes(StandardCharsets.UTF_8);
+            // Serialize MediaInfo rows to JSON array string
+            List<String> mediaInfoJsons = chunk.stream()
+                .map(OccurrenceSpecieMultiMediaTableBuilder::rowToJsonMediaInfo)
+                .collect(Collectors.toList());
+
+            String mediaInfosStr = "[" + String.join(",", mediaInfoJsons) + "]";
+            byte[] value = mediaInfosStr.getBytes(StandardCharsets.UTF_8);
             Put put = new Put(rowKeyBytes);
-            put.addColumn(Bytes.toBytes(COLUMN_FAMILY), identifiersQualifier, value);
-            put.addColumn(Bytes.toBytes(COLUMN_FAMILY), identifiersCountQualifier, Bytes.toBytes(chunk.size()));
-            put.addColumn(Bytes.toBytes(COLUMN_FAMILY), totalIdentifiersCountQualifier, Bytes.toBytes(identifiers.size()));
+            put.addColumn(Bytes.toBytes(COLUMN_FAMILY), mediaInfosQualifier, value);
+            put.addColumn(Bytes.toBytes(COLUMN_FAMILY), multimediaCountQualifier, Bytes.toBytes(chunk.size()));
+            put.addColumn(Bytes.toBytes(COLUMN_FAMILY), totalMultimediaCountQualifier, Bytes.toBytes(mediaInfos.size()));
             batch.add(put);
           }
 
@@ -167,6 +174,18 @@ public class OccurrenceSpecieMultiMediaTableBuilder {
     spark.sparkContext().clearJobGroup();
 
     spark.stop();
+  }
+
+
+  @SneakyThrows
+  private static String rowToJsonMediaInfo(Row row) {
+    Map<String,Object> map = new HashMap<>();
+    map.put("identifier", row.getAs("identifier"));
+    map.put("title", row.getAs("title"));
+    map.put("gbifid", row.getAs("gbifid"));
+    map.put("rightsholder", row.getAs("rightsholder"));
+    map.put("license", row.getAs("license"));
+    return MAPPER.writeValueAsString(map);
   }
 
   /**
@@ -209,17 +228,24 @@ public class OccurrenceSpecieMultiMediaTableBuilder {
   private static Dataset<Row> createSpeciesMediaDataset(SparkSession spark, String sourceCatalog, Integer partitions) {
 
     // Read from Iceberg/Hive table
-    Dataset<Row> df = spark.sql(String.format("SELECT o.speciesKey, m.identifier, m.type " +
+    Dataset<Row> df = spark.sql(String.format("SELECT o.speciesKey, m.identifier, m.type, m.title, m.gbifid, m.rightsholder, m.license " +
         "FROM %1$s.occurrence o " +
         "JOIN %1$s.occurrence_multimedia m ON o.gbifId = m.gbifId", sourceCatalog) );
 
     // Before groupBy, repartition to increase parallelism
-    Dataset<Row> filteredDf = df.select("speciesKey", "type", "identifier");
+    Dataset<Row> filteredDf = df.select(functions.col("speciesKey"), functions.col("type"),
+        functions.struct(
+        functions.col("identifier"),
+        functions.col("title"),
+        functions.col("gbifid"),
+        functions.col("rightsholder"),
+        functions.col("license")
+    ).alias("mediaInfo"));
     Dataset<Row> repartitionedDf = filteredDf.repartition(partitions, functions.col("speciesKey"), functions.col("type"));
 
     return repartitionedDf
         .groupBy("speciesKey", "type")
-        .agg(functions.collect_set("identifier").alias("identifiers"));
+        .agg(functions.collect_set("mediaInfo").alias("mediaInfos"));
   }
 
   /**
