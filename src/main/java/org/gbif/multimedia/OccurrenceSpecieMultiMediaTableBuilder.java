@@ -122,7 +122,7 @@ public class OccurrenceSpecieMultiMediaTableBuilder {
           // Append a postfix to the row key if there are multiple cells for the same speciesKey+mediaType
           String identifierPostKey = chunkIndex != null ? ("#" + chunkIndex) : "";
 
-          byte[] keyPrefix = saltedKeyGenerator.computeKey(speciesKey + mediaType.toUpperCase(Locale.ROOT));
+          byte[] keyPrefix = saltedKeyGenerator.computeKey(speciesKey + mediaType.toLowerCase(Locale.ROOT));
           byte[] postKeyBytes = identifierPostKey.getBytes(StandardCharsets.UTF_8);
           byte[] rowKeyBytes = new byte[keyPrefix.length + postKeyBytes.length];
 
