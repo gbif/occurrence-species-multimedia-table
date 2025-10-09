@@ -13,6 +13,8 @@
  */
 package org.gbif.multimedia;
 
+import org.apache.hadoop.hbase.util.Bytes;
+
 import java.io.Serializable;
 import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
@@ -103,10 +105,5 @@ public class SaltedKeyGenerator implements Serializable {
    */
   public byte[] bucketOf(byte[] saltedKey) {
     return Arrays.copyOfRange(saltedKey, 0, Integer.toString(numOfBuckets - 1).length());
-  }
-
-  public static void main(String[] args) {
-    SaltedKeyGenerator saltedKeyGenerator = new SaltedKeyGenerator(30);
-    System.out.println(saltedKeyGenerator.getCharset());
   }
 }

@@ -6,7 +6,6 @@ import java.nio.charset.StandardCharsets;
 import java.util.*;
 import java.util.stream.Collectors;
 
-import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.SneakyThrows;
 import lombok.extern.slf4j.Slf4j;
@@ -22,6 +21,8 @@ import org.apache.spark.api.java.function.VoidFunction;
 import org.apache.spark.sql.Dataset;
 import org.apache.spark.sql.Row;
 import org.apache.spark.sql.SparkSession;
+import org.apache.spark.sql.expressions.Window;
+import org.apache.spark.sql.expressions.WindowSpec;
 import org.apache.spark.sql.functions;
 
 /**
@@ -115,59 +116,53 @@ public class OccurrenceSpecieMultiMediaTableBuilder {
           Row r = rows.next();
           String speciesKey = r.getAs("speciesKey");
           String mediaType = r.getAs("type");
-          // Serialize mediaInfos to JSON array
+          Long chunkIndex = r.getAs("chunkIndex");
           List<Row> mediaInfos = r.getList(r.fieldIndex("mediaInfos"));
 
-          // Use a fixed qualifier, e.g., "identifiers"
+          // Append a postfix to the row key if there are multiple cells for the same speciesKey+mediaType
+          String identifierPostKey = chunkIndex != null ? ("#" + chunkIndex) : "";
+
+          byte[] keyPrefix = saltedKeyGenerator.computeKey(speciesKey + mediaType.toUpperCase(Locale.ROOT));
+          byte[] postKeyBytes = identifierPostKey.getBytes(StandardCharsets.UTF_8);
+          byte[] rowKeyBytes = new byte[keyPrefix.length + postKeyBytes.length];
+
+          // Compute salted row key
+          System.arraycopy(keyPrefix, 0, rowKeyBytes, 0, keyPrefix.length);
+          System.arraycopy(postKeyBytes, 0, rowKeyBytes, keyPrefix.length, postKeyBytes.length);
 
 
-          for (int i = 0; i < mediaInfos.size(); i += MAX_MEDIAINFOS_PER_CELL) {
+          // Serialize MediaInfo rows to JSON array string
+          List<String> mediaInfoJsons = mediaInfos.stream()
+              .map(OccurrenceSpecieMultiMediaTableBuilder::rowToJsonMediaInfo)
+              .collect(Collectors.toList());
 
-            // Append a postfix to the row key if there are multiple cells for the same speciesKey+mediaType
-            String identifierPostKey = mediaInfos.size() > MAX_MEDIAINFOS_PER_CELL ? ("#" + (i / MAX_MEDIAINFOS_PER_CELL)) : "";
+          String mediaInfosStr = "[" + String.join(",", mediaInfoJsons) + "]";
+          byte[] value = mediaInfosStr.getBytes(StandardCharsets.UTF_8);
+          Put put = new Put(rowKeyBytes);
+          put.addColumn(Bytes.toBytes(COLUMN_FAMILY), mediaInfosQualifier, value);
+          put.addColumn(Bytes.toBytes(COLUMN_FAMILY), multimediaCountQualifier, Bytes.toBytes(mediaInfoJsons.size()));
+          put.addColumn(Bytes.toBytes(COLUMN_FAMILY), totalMultimediaCountQualifier, Bytes.toBytes(mediaInfos.size()));
+          batch.add(put);
 
-            byte[] keyPrefix = saltedKeyGenerator.computeKey(speciesKey + mediaType);
-            byte[] postKeyBytes = identifierPostKey.getBytes(StandardCharsets.UTF_8);
-            byte[] rowKeyBytes = new byte[keyPrefix.length + postKeyBytes.length];
 
-            // Compute salted row key
-            System.arraycopy(keyPrefix, 0, rowKeyBytes, 0, keyPrefix.length);
-            System.arraycopy(postKeyBytes, 0, rowKeyBytes, keyPrefix.length, postKeyBytes.length);
-
-            List<Row> chunk = mediaInfos.subList(i, Math.min(i + MAX_MEDIAINFOS_PER_CELL, mediaInfos.size()));
-
-            // Serialize MediaInfo rows to JSON array string
-            List<String> mediaInfoJsons = chunk.stream()
-                .map(OccurrenceSpecieMultiMediaTableBuilder::rowToJsonMediaInfo)
-                .collect(Collectors.toList());
-
-            String mediaInfosStr = "[" + String.join(",", mediaInfoJsons) + "]";
-            byte[] value = mediaInfosStr.getBytes(StandardCharsets.UTF_8);
-            Put put = new Put(rowKeyBytes);
-            put.addColumn(Bytes.toBytes(COLUMN_FAMILY), mediaInfosQualifier, value);
-            put.addColumn(Bytes.toBytes(COLUMN_FAMILY), multimediaCountQualifier, Bytes.toBytes(chunk.size()));
-            put.addColumn(Bytes.toBytes(COLUMN_FAMILY), totalMultimediaCountQualifier, Bytes.toBytes(mediaInfos.size()));
-            batch.add(put);
-          }
-
-          if (batch.size() >= BATCH_PUT_SIZE) {
-            // submit batch
-            for (Put p : batch) {
-              mutator.mutate(p);
-            }
-            mutator.flush();
-            batch.clear();
-          }
-        }
-
-        // flush remaining
-        if (!batch.isEmpty()) {
+        if (batch.size() >= BATCH_PUT_SIZE) {
+          // submit batch
           for (Put p : batch) {
             mutator.mutate(p);
           }
           mutator.flush();
           batch.clear();
         }
+      }
+
+      // flush remaining
+      if (!batch.isEmpty()) {
+        for (Put p : batch) {
+          mutator.mutate(p);
+        }
+        mutator.flush();
+        batch.clear();
+      }
       }
     });
     log.info("HBase table {} population completed.", hbaseTable);
@@ -232,20 +227,36 @@ public class OccurrenceSpecieMultiMediaTableBuilder {
         "FROM %1$s.occurrence o " +
         "JOIN %1$s.occurrence_multimedia m ON o.gbifId = m.gbifId", sourceCatalog) );
 
-    // Before groupBy, repartition to increase parallelism
-    Dataset<Row> filteredDf = df.select(functions.col("speciesKey"), functions.col("type"),
-        functions.struct(
-        functions.col("identifier"),
-        functions.col("title"),
-        functions.col("gbifid"),
-        functions.col("rightsholder"),
-        functions.col("license")
-    ).alias("mediaInfo"));
-    Dataset<Row> repartitionedDf = filteredDf.repartition(partitions, functions.col("speciesKey"), functions.col("type"));
+    // Repartition for parallelism
+    Dataset<Row> repartitionedDf = df.repartition(partitions, functions.col("speciesKey"), functions.col("type"));
 
-    return repartitionedDf
-        .groupBy("speciesKey", "type")
-        .agg(functions.collect_set("mediaInfo").alias("mediaInfos"));
+    // Window for row_number per group
+    WindowSpec w = Window.partitionBy("speciesKey", "type").orderBy(functions.col("identifier"));
+    Dataset<Row> withChunkIndex = repartitionedDf.withColumn(
+        "chunkIndex",
+        functions.floor(
+            functions.row_number().over(w).minus(1)
+                .divide(MAX_MEDIAINFOS_PER_CELL)
+        )
+    );
+
+    // Now wrap mediaInfo struct
+    Dataset<Row> withMediaInfo = withChunkIndex.select(
+        functions.col("speciesKey"),
+        functions.col("type"),
+        functions.col("chunkIndex"),
+        functions.struct(
+            functions.col("identifier"),
+            functions.col("title"),
+            functions.col("gbifid"),
+            functions.col("rightsholder"),
+            functions.col("license")
+        ).alias("mediaInfo")
+    );
+
+   // Group by speciesKey, type, chunkIndex
+    return withMediaInfo.groupBy("speciesKey", "type", "chunkIndex")
+        .agg(functions.collect_list("mediaInfo").alias("mediaInfos"));
   }
 
   /**
@@ -292,8 +303,8 @@ public class OccurrenceSpecieMultiMediaTableBuilder {
       }
 
       // Prepare splits
-      byte[][] splits = new byte[saltBuckets][];
-      for (int i = 0; i < saltBuckets; i++) {
+      byte[][] splits = new byte[saltBuckets - 1][];
+      for (int i = 0; i < saltBuckets - 1; i++) {
         splits[i] = Bytes.toBytes(String.format("%02d", i + 1));
       }
 
@@ -308,4 +319,5 @@ public class OccurrenceSpecieMultiMediaTableBuilder {
       log.info("Table {} created with {} salt buckets", tableName, saltBuckets);
     }
   }
+
 }
