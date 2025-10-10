@@ -26,23 +26,23 @@ import org.apache.spark.sql.expressions.WindowSpec;
 import org.apache.spark.sql.functions;
 
 /**
- * A utility to build an HBase table mapping speciesKey+mediaType to multimedia identifiers.
+ * A utility to build an HBase table mapping speciesKey+mediaType to multimedia records.
  * <p>
- * The table is designed for efficient retrieval of multimedia identifiers by speciesKey and mediaType.
+ * The table is designed for efficient retrieval of multimedia records by speciesKey and mediaType.
  * The row key is constructed as: "<speciesKey>#<mediaType>#<salt>", where salt is a hash-based
  * value to distribute rows evenly across the cluster.
  * <p>
- * Each row contains a single column family "media" with a fixed qualifier "identifiers" that holds
- * a comma-separated list of multimedia identifiers.
+ * Each row contains a single column family "media" with a fixed qualifier "mediaInfos" that holds
+ * a comma-separated list of multimedia records.
  * <p>
  * Usage:
  * <pre>
- *   java -cp your-jar-with-dependencies.jar org.gbif.multimedia.MultiMediaTableBuilder \
+ *   java -cp your-jar-with-dependencies.jar org.gbif.multimedia.OccurrenceSpecieMultiMediaTableBuilder \
  *     <sourceCatalog> <hbaseTable> <saltBuckets> <hbase.zookeeper.quorum> <zookeeper.znode.parent>
  * </pre>
  * Example:
  * <pre>
- *   java -cp your-jar-with-dependencies.jar org.gbif.multimedia.MultiMediaTableBuilder \
+ *   java -cp your-jar-with-dependencies.jar org.gbif.multimedia.OccurrenceSpecieMultiMediaTableBuilder \
  *     iceberg.prod occurrence_species_multimedia 64 zk1,zk2,zk3 /hbase
  * </pre>
  */
@@ -66,7 +66,7 @@ public class OccurrenceSpecieMultiMediaTableBuilder {
 
   public static void main(String[] args) throws Exception {
     if (args.length < 5) {
-      System.err.println("Usage: MediaTableBuilder <sourceCatalog> <hbaseTable> <saltBuckets> <hbase.zookeeper.quorum> <zookeeper.znode.parent>");
+      System.err.println("Usage: OccurrenceSpecieMultiMediaTableBuilder <sourceCatalog> <hbaseTable> <saltBuckets> <hbase.zookeeper.quorum> <zookeeper.znode.parent>");
       System.exit(1);
     }
 
@@ -76,7 +76,7 @@ public class OccurrenceSpecieMultiMediaTableBuilder {
     final String zkQuorum = args[3];                   // e.g. "zk1,zk2,zk3"
     final String znodeParent = args[4];                // e.g. "/znode-93f9cdb5-d146-46da-9f80-e8546468b0fe/hbase"
 
-    SparkSession spark = createSparkSession("MediaTableBuilder");
+    SparkSession spark = createSparkSession("OccurrenceSpecieMultiMediaTableBuilder");
 
     // Recreate HBase table
     log.info("(Re)Creating HBase table: {}", hbaseTable);
@@ -120,7 +120,7 @@ public class OccurrenceSpecieMultiMediaTableBuilder {
           String mediaType = mediaTypeValue != null ? mediaTypeValue.toLowerCase(Locale.ROOT) : "";
           Long chunkIndex = r.getAs("chunkIndex");
           List<Row> mediaInfos = r.getList(r.fieldIndex("mediaInfos"));
-          Long totalMultimediaCount = r.getAs("totalMultimediaCount");
+          long totalMultimediaCount = r.getLong(r.fieldIndex("totalMultimediaCount"));
 
           byte[] rowKeyBytes = saltedKeyGenerator.computeKey(speciesKey + mediaType + chunkIndex);
 
@@ -137,7 +137,6 @@ public class OccurrenceSpecieMultiMediaTableBuilder {
           put.addColumn(COLUMN_FAMILY, TOTAL_MULTIMEDIA_COUNT_QUALIFIER, Bytes.toBytes(totalMultimediaCount));
           batch.add(put);
 
-
         if (batch.size() >= BATCH_PUT_SIZE) {
           // submit batch
           for (Put p : batch) {
@@ -150,7 +149,7 @@ public class OccurrenceSpecieMultiMediaTableBuilder {
 
       // flush remaining
       if (!batch.isEmpty()) {
-        for (Put p : batch) {
+        for (Put p: batch) {
           mutator.mutate(p);
         }
         mutator.flush();
@@ -215,26 +214,24 @@ public class OccurrenceSpecieMultiMediaTableBuilder {
    */
   private static Dataset<Row> createSpeciesMediaDataset(SparkSession spark, String sourceCatalog, Integer partitions) {
 
-    // Read from Iceberg/Hive table
-    Dataset<Row> df = spark.sql(String.format("SELECT o.specieskey, m.identifier, COALESCE(m.type, '') AS type, m.title, m.gbifid, m.rightsholder, m.license " +
-        "FROM %1$s.occurrence o " +
-        "JOIN %1$s.occurrence_multimedia m ON o.gbifid = m.gbifid " +
-        "WHERE o.specieskey IS NOT NULL", sourceCatalog) );
+    Dataset<Row> df = spark.sql(String.format(
+        "SELECT o.specieskey, " +
+            "COALESCE(m.identifier, '') AS identifier, " +
+            "COALESCE(m.type, '') AS type, " +
+            "m.title, m.gbifid, m.rightsholder, m.license " +
+            "FROM %1$s.occurrence o " +
+            "JOIN %1$s.occurrence_multimedia m ON o.gbifid = m.gbifid " +
+            "WHERE o.specieskey IS NOT NULL", sourceCatalog));
 
-    // Repartition for parallelism
-    Dataset<Row> repartitionedDf = df.repartition(partitions, functions.col("specieskey"), functions.col("type"));
+    Dataset<Row> globalTotals = df.groupBy("specieskey", "type")
+        .agg(functions.count("identifier").alias("totalMultimediaCount"));
 
-    // Window for row_number per group
-    WindowSpec w = Window.partitionBy("specieskey", "type").orderBy(functions.col("identifier"));
-    Dataset<Row> withChunkIndex = repartitionedDf.withColumn(
+    WindowSpec w = Window.partitionBy("specieskey", "type").orderBy("identifier");
+    Dataset<Row> withChunkIndex = df.withColumn(
         "chunkIndex",
-        functions.floor(
-            functions.row_number().over(w).minus(1)
-                .divide(MAX_MEDIAINFOS_PER_CELL)
-        )
+        functions.floor(functions.row_number().over(w).minus(1).divide(MAX_MEDIAINFOS_PER_CELL))
     );
 
-    // Now wrap mediaInfo struct
     Dataset<Row> withMediaInfo = withChunkIndex.select(
         functions.col("specieskey"),
         functions.col("type"),
@@ -248,10 +245,6 @@ public class OccurrenceSpecieMultiMediaTableBuilder {
         ).alias("mediaInfo")
     );
 
-    Dataset<Row> globalTotals = withChunkIndex.groupBy("specieskey", "type")
-        .agg(functions.count("identifier").alias("totalMultimediaCount"));
-
-   // Group by specieskey, type, chunkIndex
     Dataset<Row> chunked = withMediaInfo.groupBy("specieskey", "type", "chunkIndex")
         .agg(functions.collect_list("mediaInfo").alias("mediaInfos"));
 
