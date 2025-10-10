@@ -170,8 +170,8 @@ public class OccurrenceSpecieMultiMediaTableBuilder {
     Map<String,Object> map = new HashMap<>();
     map.put("identifier", row.getAs("identifier"));
     map.put("title", row.getAs("title"));
-    map.put("gbifid", row.getAs("gbifid"));
-    map.put("rightsholder", row.getAs("rightsholder"));
+    map.put("occurrenceKey", row.getAs("gbifid"));
+    map.put("rightsHolder", row.getAs("rightsholder"));
     map.put("license", row.getAs("license"));
     return MAPPER.writeValueAsString(map);
   }
@@ -242,8 +242,8 @@ public class OccurrenceSpecieMultiMediaTableBuilder {
         functions.struct(
             functions.col("identifier"),
             functions.col("title"),
-            functions.col("gbifid").as("occurrenceKey"),
-            functions.col("rightsholder").as("rightsHolder"),
+            functions.col("gbifid"),
+            functions.col("rightsholder"),
             functions.col("license")
         ).alias("mediaInfo")
     );
