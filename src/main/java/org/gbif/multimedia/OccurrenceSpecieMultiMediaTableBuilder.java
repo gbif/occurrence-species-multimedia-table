@@ -115,12 +115,12 @@ public class OccurrenceSpecieMultiMediaTableBuilder {
         while (rows.hasNext()) {
 
           Row r = rows.next();
-          String speciesKey = r.getAs("speciesKey");
+          String speciesKey = r.getAs("specieskey");
           String mediaTypeValue = r.getAs("type");
           String mediaType = mediaTypeValue != null ? mediaTypeValue.toLowerCase(Locale.ROOT) : "";
           Long chunkIndex = r.getAs("chunkIndex");
           List<Row> mediaInfos = r.getList(r.fieldIndex("mediaInfos"));
-          Long totalMultimediaCount = r.getAs("total_multimedia_count");
+          Long totalMultimediaCount = r.getAs("totalMultimediaCount");
 
           byte[] rowKeyBytes = saltedKeyGenerator.computeKey(speciesKey + mediaType + chunkIndex);
 
@@ -216,15 +216,16 @@ public class OccurrenceSpecieMultiMediaTableBuilder {
   private static Dataset<Row> createSpeciesMediaDataset(SparkSession spark, String sourceCatalog, Integer partitions) {
 
     // Read from Iceberg/Hive table
-    Dataset<Row> df = spark.sql(String.format("SELECT o.speciesKey, m.identifier, m.type, m.title, m.gbifid, m.rightsholder, m.license " +
+    Dataset<Row> df = spark.sql(String.format("SELECT o.specieskey, m.identifier, COALESCE(m.type, '') AS type, m.title, m.gbifid, m.rightsholder, m.license " +
         "FROM %1$s.occurrence o " +
-        "JOIN %1$s.occurrence_multimedia m ON o.gbifId = m.gbifId", sourceCatalog) );
+        "JOIN %1$s.occurrence_multimedia m ON o.gbifId = m.gbifId " +
+        "WHERE o.specieskey IS NOT NULL", sourceCatalog) );
 
     // Repartition for parallelism
-    Dataset<Row> repartitionedDf = df.repartition(partitions, functions.col("speciesKey"), functions.col("type"));
+    Dataset<Row> repartitionedDf = df.repartition(partitions, functions.col("specieskey"), functions.col("type"));
 
     // Window for row_number per group
-    WindowSpec w = Window.partitionBy("speciesKey", "type").orderBy(functions.col("identifier"));
+    WindowSpec w = Window.partitionBy("specieskey", "type").orderBy(functions.col("identifier"));
     Dataset<Row> withChunkIndex = repartitionedDf.withColumn(
         "chunkIndex",
         functions.floor(
@@ -235,26 +236,26 @@ public class OccurrenceSpecieMultiMediaTableBuilder {
 
     // Now wrap mediaInfo struct
     Dataset<Row> withMediaInfo = withChunkIndex.select(
-        functions.col("speciesKey"),
+        functions.col("specieskey"),
         functions.col("type"),
         functions.col("chunkIndex"),
         functions.struct(
             functions.col("identifier"),
             functions.col("title"),
-            functions.col("gbifid"),
-            functions.col("rightsholder"),
+            functions.col("gbifid").as("occurrenceKey"),
+            functions.col("rightsholder").as("rightsHolder"),
             functions.col("license")
         ).alias("mediaInfo")
     );
 
-    Dataset<Row> globalTotals = withChunkIndex.groupBy("speciesKey", "type")
-        .agg(functions.count("identifier").alias("total_multimedia_count"));
+    Dataset<Row> globalTotals = withChunkIndex.groupBy("specieskey", "type")
+        .agg(functions.count("identifier").alias("totalMultimediaCount"));
 
-   // Group by speciesKey, type, chunkIndex
-    Dataset<Row> chunked = withMediaInfo.groupBy("speciesKey", "type", "chunkIndex")
+   // Group by specieskey, type, chunkIndex
+    Dataset<Row> chunked = withMediaInfo.groupBy("specieskey", "type", "chunkIndex")
         .agg(functions.collect_list("mediaInfo").alias("mediaInfos"));
 
-    return chunked.join(globalTotals, new String[]{"speciesKey", "type"});
+    return chunked.join(globalTotals, new String[]{"specieskey", "type"}, "inner");
   }
 
   /**
