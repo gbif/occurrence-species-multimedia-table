@@ -50,12 +50,16 @@ import org.apache.spark.sql.functions;
 public class OccurrenceSpecieMultiMediaTableBuilder {
 
   // Column family & qualifier conventions
-  private static final String COLUMN_FAMILY = "media"; // HBase CF
+  private static final byte[] COLUMN_FAMILY = Bytes.toBytes("media"); // HBase
+  private static final byte[] MEDIA_INFOS_QUALIFIER = Bytes.toBytes("media_infos");
+  private static final byte[] MULTIMEDIA_COUNT_QUALIFIER = Bytes.toBytes("multimedia_count");
+  private static final byte[] TOTAL_MULTIMEDIA_COUNT_QUALIFIER = Bytes.toBytes("total_multimedia_count");
+  // CF
   private static final int BATCH_PUT_SIZE = 1000;      // tune per cluster
 
-  private static final int MAX_MEDIAINFOS_PER_CELL = 1000;
+  private static final int MAX_MEDIAINFOS_PER_CELL = 300;
 
-  private static final int DEFAULT_PARTITIONS = 200;
+  private static final int DEFAULT_PARTITIONS = 600;
 
   private static final ObjectMapper MAPPER = new ObjectMapper();
 
@@ -108,28 +112,17 @@ public class OccurrenceSpecieMultiMediaTableBuilder {
 
         List<Put> batch = new ArrayList<>(BATCH_PUT_SIZE);
         SaltedKeyGenerator saltedKeyGenerator = new SaltedKeyGenerator(saltBuckets);
-        byte[] mediaInfosQualifier = Bytes.toBytes("media_infos");
-        byte[] multimediaCountQualifier = Bytes.toBytes("multimedia_count");
-        byte[] totalMultimediaCountQualifier = Bytes.toBytes("total_multimedia_count");
         while (rows.hasNext()) {
 
           Row r = rows.next();
           String speciesKey = r.getAs("speciesKey");
-          String mediaType = r.getAs("type");
+          String mediaTypeValue = r.getAs("type");
+          String mediaType = mediaTypeValue != null ? mediaTypeValue.toLowerCase(Locale.ROOT) : "";
           Long chunkIndex = r.getAs("chunkIndex");
           List<Row> mediaInfos = r.getList(r.fieldIndex("mediaInfos"));
+          Long totalMultimediaCount = r.getAs("total_multimedia_count");
 
-          // Append a postfix to the row key if there are multiple cells for the same speciesKey+mediaType
-          String identifierPostKey = chunkIndex != null ? ("#" + chunkIndex) : "";
-
-          byte[] keyPrefix = saltedKeyGenerator.computeKey(speciesKey + mediaType.toLowerCase(Locale.ROOT));
-          byte[] postKeyBytes = identifierPostKey.getBytes(StandardCharsets.UTF_8);
-          byte[] rowKeyBytes = new byte[keyPrefix.length + postKeyBytes.length];
-
-          // Compute salted row key
-          System.arraycopy(keyPrefix, 0, rowKeyBytes, 0, keyPrefix.length);
-          System.arraycopy(postKeyBytes, 0, rowKeyBytes, keyPrefix.length, postKeyBytes.length);
-
+          byte[] rowKeyBytes = saltedKeyGenerator.computeKey(speciesKey + mediaType + chunkIndex);
 
           // Serialize MediaInfo rows to JSON array string
           List<String> mediaInfoJsons = mediaInfos.stream()
@@ -139,9 +132,9 @@ public class OccurrenceSpecieMultiMediaTableBuilder {
           String mediaInfosStr = "[" + String.join(",", mediaInfoJsons) + "]";
           byte[] value = mediaInfosStr.getBytes(StandardCharsets.UTF_8);
           Put put = new Put(rowKeyBytes);
-          put.addColumn(Bytes.toBytes(COLUMN_FAMILY), mediaInfosQualifier, value);
-          put.addColumn(Bytes.toBytes(COLUMN_FAMILY), multimediaCountQualifier, Bytes.toBytes(mediaInfoJsons.size()));
-          put.addColumn(Bytes.toBytes(COLUMN_FAMILY), totalMultimediaCountQualifier, Bytes.toBytes(mediaInfos.size()));
+          put.addColumn(COLUMN_FAMILY, MEDIA_INFOS_QUALIFIER, value);
+          put.addColumn(COLUMN_FAMILY, MULTIMEDIA_COUNT_QUALIFIER, Bytes.toBytes(mediaInfoJsons.size()));
+          put.addColumn(COLUMN_FAMILY, TOTAL_MULTIMEDIA_COUNT_QUALIFIER, Bytes.toBytes(totalMultimediaCount));
           batch.add(put);
 
 
@@ -254,9 +247,14 @@ public class OccurrenceSpecieMultiMediaTableBuilder {
         ).alias("mediaInfo")
     );
 
+    Dataset<Row> globalTotals = withChunkIndex.groupBy("speciesKey", "type")
+        .agg(functions.count("identifier").alias("total_multimedia_count"));
+
    // Group by speciesKey, type, chunkIndex
-    return withMediaInfo.groupBy("speciesKey", "type", "chunkIndex")
+    Dataset<Row> chunked = withMediaInfo.groupBy("speciesKey", "type", "chunkIndex")
         .agg(functions.collect_list("mediaInfo").alias("mediaInfos"));
+
+    return chunked.join(globalTotals, new String[]{"speciesKey", "type"});
   }
 
   /**
