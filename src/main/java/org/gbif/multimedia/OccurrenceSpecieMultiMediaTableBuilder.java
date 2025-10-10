@@ -218,7 +218,7 @@ public class OccurrenceSpecieMultiMediaTableBuilder {
     // Read from Iceberg/Hive table
     Dataset<Row> df = spark.sql(String.format("SELECT o.specieskey, m.identifier, COALESCE(m.type, '') AS type, m.title, m.gbifid, m.rightsholder, m.license " +
         "FROM %1$s.occurrence o " +
-        "JOIN %1$s.occurrence_multimedia m ON o.gbifId = m.gbifId " +
+        "JOIN %1$s.occurrence_multimedia m ON o.gbifid = m.gbifid " +
         "WHERE o.specieskey IS NOT NULL", sourceCatalog) );
 
     // Repartition for parallelism
