@@ -13,8 +13,6 @@
  */
 package org.gbif.multimedia;
 
-import org.apache.hadoop.hbase.util.Bytes;
-
 import java.io.Serializable;
 import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
