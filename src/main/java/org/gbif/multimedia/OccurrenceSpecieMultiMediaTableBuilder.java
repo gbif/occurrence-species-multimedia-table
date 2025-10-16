@@ -26,10 +26,10 @@ import org.apache.spark.sql.expressions.WindowSpec;
 import org.apache.spark.sql.functions;
 
 /**
- * A utility to build an HBase table mapping speciesKey+mediaType to multimedia records.
+ * A utility to build an HBase table mapping taxonKey+mediaType to multimedia records.
  * <p>
- * The table is designed for efficient retrieval of multimedia records by speciesKey and mediaType.
- * The row key is constructed as: "<speciesKey>#<mediaType>#<salt>", where salt is a hash-based
+ * The table is designed for efficient retrieval of multimedia records by taxonKey and mediaType.
+ * The row key is constructed as: "<taxonKey>#<mediaType>#<salt>", where salt is a hash-based
  * value to distribute rows evenly across the cluster.
  * <p>
  * Each row contains a single column family "media" with a fixed qualifier "mediaInfos" that holds
@@ -88,9 +88,9 @@ public class OccurrenceSpecieMultiMediaTableBuilder {
 
     log.info("Using {} shuffle partitions", partitions);
 
-    //1. Create Dataset with speciesKey, media type and aggregated multimedia identifiers
+    //1. Create Dataset with taxonKey, media type and aggregated multimedia identifiers
     log.info("Creating aggregated Dataset from source catalog: {}", sourceCatalog);
-    spark.sparkContext().setJobGroup("occurrence-query", "Getting the aggregated multimedia identifiers by speciesKey and media type", true);
+    spark.sparkContext().setJobGroup("occurrence-query", "Getting the aggregated multimedia identifiers by taxonKey and media type", true);
     Dataset<Row> aggDf = createSpeciesMediaDataset(spark, sourceCatalog, partitions);
 
     spark.sqlContext().setConf("spark.sql.shuffle.partitions", partitions.toString());
@@ -115,14 +115,14 @@ public class OccurrenceSpecieMultiMediaTableBuilder {
         while (rows.hasNext()) {
 
           Row r = rows.next();
-          String speciesKey = r.getAs("specieskey");
+          String taxonKey = r.getAs("taxonkey");
           String mediaTypeValue = r.getAs("type");
           String mediaType = mediaTypeValue != null ? mediaTypeValue.toLowerCase(Locale.ROOT) : "";
           Long chunkIndex = r.getAs("chunkIndex");
           List<Row> mediaInfos = r.getList(r.fieldIndex("mediaInfos"));
           long totalMultimediaCount = r.getLong(r.fieldIndex("totalMultimediaCount"));
 
-          byte[] rowKeyBytes = saltedKeyGenerator.computeKey(speciesKey + mediaType + chunkIndex);
+          byte[] rowKeyBytes = saltedKeyGenerator.computeKey(taxonKey + mediaType + chunkIndex);
 
           // Serialize MediaInfo rows to JSON array string
           List<String> mediaInfoJsons = mediaInfos.stream()
@@ -205,35 +205,35 @@ public class OccurrenceSpecieMultiMediaTableBuilder {
   }
 
   /**
-   * Creates a Dataset<Row> with speciesKey, media type, and aggregated multimedia identifiers.
+   * Creates a Dataset<Row> with taxonKey, media type, and aggregated multimedia identifiers.
    *
    * @param spark         the SparkSession instance
    * @param sourceCatalog the source catalog name (e.g., "iceberg.prod")
    * @param partitions    the number of partitions for repartitioning
-   * @return a Dataset<Row> with columns: speciesKey, type, identifiers (array of strings)
+   * @return a Dataset<Row> with columns: taxonKey, type, identifiers (array of strings)
    */
   private static Dataset<Row> createSpeciesMediaDataset(SparkSession spark, String sourceCatalog, Integer partitions) {
 
     Dataset<Row> df = spark.sql(String.format(
-        "SELECT o.specieskey, " +
+        "SELECT o.taxonkey, " +
             "COALESCE(m.identifier, '') AS identifier, " +
             "COALESCE(m.type, '') AS type, " +
             "m.title, m.gbifid, m.rightsholder, m.license " +
             "FROM %1$s.occurrence o " +
             "JOIN %1$s.occurrence_multimedia m ON o.gbifid = m.gbifid " +
-            "WHERE o.specieskey IS NOT NULL", sourceCatalog));
+            "WHERE m.identifier IS NOT NULL AND o.taxonkey IS NOT NULL", sourceCatalog));
 
-    Dataset<Row> globalTotals = df.groupBy("specieskey", "type")
+    Dataset<Row> globalTotals = df.groupBy("taxonkey", "type")
         .agg(functions.count("identifier").alias("totalMultimediaCount"));
 
-    WindowSpec w = Window.partitionBy("specieskey", "type").orderBy("identifier");
+    WindowSpec w = Window.partitionBy("taxonkey", "type").orderBy("identifier");
     Dataset<Row> withChunkIndex = df.withColumn(
         "chunkIndex",
         functions.floor(functions.row_number().over(w).minus(1).divide(MAX_MEDIAINFOS_PER_CELL))
     );
 
     Dataset<Row> withMediaInfo = withChunkIndex.select(
-        functions.col("specieskey"),
+        functions.col("taxonkey"),
         functions.col("type"),
         functions.col("chunkIndex"),
         functions.struct(
@@ -245,10 +245,10 @@ public class OccurrenceSpecieMultiMediaTableBuilder {
         ).alias("mediaInfo")
     );
 
-    Dataset<Row> chunked = withMediaInfo.groupBy("specieskey", "type", "chunkIndex")
+    Dataset<Row> chunked = withMediaInfo.groupBy("taxonkey", "type", "chunkIndex")
         .agg(functions.collect_list("mediaInfo").alias("mediaInfos"));
 
-    return chunked.join(globalTotals, new String[]{"specieskey", "type"}, "inner");
+    return chunked.join(globalTotals, new String[]{"taxonkey", "type"}, "inner");
   }
 
   /**
