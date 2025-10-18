@@ -13,6 +13,7 @@ import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hbase.HBaseConfiguration;
 import org.apache.hadoop.hbase.client.*;
 import org.apache.hadoop.hbase.TableName;
+import org.apache.hadoop.hbase.io.compress.Compression;
 import org.apache.hadoop.hbase.util.Bytes;
 
 import org.apache.spark.SparkConf;
@@ -303,7 +304,10 @@ public class OccurrenceSpecieMultiMediaTableBuilder {
       // Define table descriptor
       TableDescriptor tableDesc = TableDescriptorBuilder
           .newBuilder(TableName.valueOf(tableName))
-          .setColumnFamily(ColumnFamilyDescriptorBuilder.of("media"))
+          .setColumnFamily(ColumnFamilyDescriptorBuilder
+              .newBuilder("media".getBytes())
+              .setCompressionType(Compression.Algorithm.SNAPPY)
+              .build())
           .build();
 
       // Create table with splits
