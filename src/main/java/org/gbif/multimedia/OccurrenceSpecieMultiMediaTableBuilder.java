@@ -14,6 +14,7 @@ import org.apache.hadoop.hbase.HBaseConfiguration;
 import org.apache.hadoop.hbase.client.*;
 import org.apache.hadoop.hbase.TableName;
 import org.apache.hadoop.hbase.io.compress.Compression;
+import org.apache.hadoop.hbase.io.encoding.DataBlockEncoding;
 import org.apache.hadoop.hbase.util.Bytes;
 
 import org.apache.spark.SparkConf;
@@ -25,6 +26,7 @@ import org.apache.spark.sql.SparkSession;
 import org.apache.spark.sql.expressions.Window;
 import org.apache.spark.sql.expressions.WindowSpec;
 import org.apache.spark.sql.functions;
+import org.gbif.multimedia.meta.ZKMapMetastore;
 
 /**
  * A utility to build an HBase table mapping taxonKey+mediaType to multimedia records.
@@ -67,7 +69,7 @@ public class OccurrenceSpecieMultiMediaTableBuilder {
 
   public static void main(String[] args) throws Exception {
     if (args.length < 5) {
-      System.err.println("Usage: OccurrenceSpecieMultiMediaTableBuilder <sourceCatalog> <hbaseTable> <saltBuckets> <hbase.zookeeper.quorum> <zookeeper.znode.parent>");
+      System.err.println("Usage: OccurrenceSpecieMultiMediaTableBuilder <sourceCatalog> <hbaseTable> <saltBuckets> <hbase.zookeeper.quorum> <zookeeper.znode.parent> <zkMetastorePath>");
       System.exit(1);
     }
 
@@ -76,6 +78,7 @@ public class OccurrenceSpecieMultiMediaTableBuilder {
     final int saltBuckets = Integer.parseInt(args[2]); // e.g. 64
     final String zkQuorum = args[3];                   // e.g. "zk1,zk2,zk3"
     final String znodeParent = args[4];                // e.g. "/znode-93f9cdb5-d146-46da-9f80-e8546468b0fe/hbase"
+    //final String zkMetastorePath = args[5];          // e.g. "/dev/meta/occurrence_species_multimedia_table"
 
     SparkSession spark = createSparkSession("OccurrenceSpecieMultiMediaTableBuilder");
 
@@ -162,6 +165,14 @@ public class OccurrenceSpecieMultiMediaTableBuilder {
     spark.sparkContext().clearJobGroup();
 
     spark.stop();
+    //updateMeta(zkQuorum, 3000, zkMetastorePath, hbaseTable);
+    //log.info("Updated metastore at {} with table name {}", zkMetastorePath, hbaseTable);
+  }
+
+  private static void updateMeta(String zkEnsemble, int retryIntervalMs, String zkNodePath, String newTableName) throws Exception {
+    try (ZKMapMetastore mapMetastore = new ZKMapMetastore(zkEnsemble, retryIntervalMs, zkNodePath)) {
+      mapMetastore.update(newTableName);
+    }
   }
 
 
@@ -304,10 +315,10 @@ public class OccurrenceSpecieMultiMediaTableBuilder {
       // Define table descriptor
       TableDescriptor tableDesc = TableDescriptorBuilder
           .newBuilder(TableName.valueOf(tableName))
-          .setColumnFamily(ColumnFamilyDescriptorBuilder
-              .newBuilder("media".getBytes())
-              .setCompressionType(Compression.Algorithm.SNAPPY)
-              .build())
+          .setColumnFamily(ColumnFamilyDescriptorBuilder.newBuilder(Bytes.toBytes("media"))
+                            .setCompressionType(Compression.Algorithm.SNAPPY)
+                            .setDataBlockEncoding(DataBlockEncoding.FAST_DIFF)
+                            .build())
           .build();
 
       // Create table with splits
