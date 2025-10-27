@@ -65,20 +65,24 @@ public class OccurrenceSpecieMultiMediaTableBuilder {
   private static final int DEFAULT_PARTITIONS = 600;
 
   private static final ObjectMapper MAPPER = new ObjectMapper();
+  public static final int RETRY_INTERVAL_MS = 3000;
 
 
   public static void main(String[] args) throws Exception {
-    if (args.length < 5) {
-      System.err.println("Usage: OccurrenceSpecieMultiMediaTableBuilder <sourceCatalog> <hbaseTable> <saltBuckets> <hbase.zookeeper.quorum> <zookeeper.znode.parent> <zkMetastorePath>");
+    if (args.length < 7) {
+      System.err.println("Usage: OccurrenceSpecieMultiMediaTableBuilder <sourceCatalog> <hbaseTable> <saltBuckets> <hbase.zookeeper.quorum> <zookeeper.znode.parent> <zkMetastorePath> <timestamp>");
       System.exit(1);
     }
 
     final String sourceCatalog = args[0];              // e.g. "iceberg.prod"
-    final String hbaseTable = args[1];                 // e.g. "occurrence_media"
+    final String baseHbaseTable = args[1];                 // e.g. "occurrence_media"
     final int saltBuckets = Integer.parseInt(args[2]); // e.g. 64
     final String zkQuorum = args[3];                   // e.g. "zk1,zk2,zk3"
     final String znodeParent = args[4];                // e.g. "/znode-93f9cdb5-d146-46da-9f80-e8546468b0fe/hbase"
-    //final String zkMetastorePath = args[5];          // e.g. "/dev/meta/occurrence_species_multimedia_table"
+    final String zkMetastorePath = args[5];          // e.g. "/dev/meta/occurrence_species_multimedia_table"
+    final String timestamp = args[6];                  // expected format "YYYYMMDD_HHMM"
+
+    final String hbaseTable = baseHbaseTable + "_" + timestamp;
 
     SparkSession spark = createSparkSession("OccurrenceSpecieMultiMediaTableBuilder");
 
@@ -112,7 +116,6 @@ public class OccurrenceSpecieMultiMediaTableBuilder {
       //params.writeBufferSize(4 * 1024 * 1024); // 4MB if needed, default is 2MB
       try (Connection conn = createHBaseConnection(zkQuorum, znodeParent);
            BufferedMutator mutator = conn.getBufferedMutator(params)) {
-
 
         List<Put> batch = new ArrayList<>(BATCH_PUT_SIZE);
         SaltedKeyGenerator saltedKeyGenerator = new SaltedKeyGenerator(saltBuckets);
@@ -165,8 +168,8 @@ public class OccurrenceSpecieMultiMediaTableBuilder {
     spark.sparkContext().clearJobGroup();
 
     spark.stop();
-    //updateMeta(zkQuorum, 3000, zkMetastorePath, hbaseTable);
-    //log.info("Updated metastore at {} with table name {}", zkMetastorePath, hbaseTable);
+    updateMeta(zkQuorum, RETRY_INTERVAL_MS, zkMetastorePath, hbaseTable);
+    log.info("Updated metastore at {} with table name {}", zkMetastorePath, hbaseTable);
   }
 
   private static void updateMeta(String zkEnsemble, int retryIntervalMs, String zkNodePath, String newTableName) throws Exception {
@@ -238,8 +241,12 @@ public class OccurrenceSpecieMultiMediaTableBuilder {
     Dataset<Row> globalTotals = df.groupBy("taxonkey", "type")
         .agg(functions.count("identifier").alias("totalMultimediaCount"));
 
+    // Add a random column, this to ensure multiple genus are showed per chunk
+    Dataset<Row> randomized = df.withColumn("randByGenus", functions.rand());
+
+    // Partition by taxonkey/type and order by the random column when assigning chunkIndex
     WindowSpec w = Window.partitionBy("taxonkey", "type").orderBy("identifier");
-    Dataset<Row> withChunkIndex = df.withColumn(
+    Dataset<Row> withChunkIndex = randomized.withColumn(
         "chunkIndex",
         functions.floor(functions.row_number().over(w).minus(1).divide(MAX_MEDIAINFOS_PER_CELL))
     );

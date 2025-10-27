@@ -13,6 +13,7 @@
  */
 package org.gbif.multimedia.meta;
 
+import lombok.extern.slf4j.Slf4j;
 import org.apache.curator.framework.CuratorFramework;
 import org.apache.curator.framework.CuratorFrameworkFactory;
 import org.apache.curator.retry.RetryNTimes;
@@ -27,8 +28,8 @@ import java.nio.charset.StandardCharsets;
  *
  * This uses a Zookeeper Path Cache pattern to watch for changes of the ZK node.
  */
+@Slf4j
 public class ZKMapMetastore implements Closeable {
-  private static final Logger LOG = LoggerFactory.getLogger(ZKMapMetastore.class);
 
   private final CuratorFramework client;
   private final String zkNodePath;
@@ -37,11 +38,26 @@ public class ZKMapMetastore implements Closeable {
     this.zkNodePath = zkNodePath;
     client = CuratorFrameworkFactory.newClient(zkEnsemble, new RetryNTimes(Integer.MAX_VALUE, retryIntervalMs));
     client.start();
+    checkPathExists();
   }
 
   public void update(String meta) throws Exception {
-    LOG.info("Updating MapTables[{}] with: {}", zkNodePath, meta);
+    log.info("Updating MapTables[{}] with: {}", zkNodePath, meta);
     client.setData().forPath(zkNodePath, meta.getBytes(StandardCharsets.UTF_8));
+  }
+
+  private void checkPathExists() {
+    try {
+      if (client.checkExists().forPath(zkNodePath) == null) {
+        client.create().creatingParentsIfNeeded().forPath(zkNodePath, new byte[0]);
+        log.info("Created ZK path: {}", zkNodePath);
+      } else {
+        log.debug("ZK path already exists: {}", zkNodePath);
+      }
+    } catch (Exception e) {
+      log.error("Failed to ensure ZK path exists: {}", zkNodePath, e);
+      throw new RuntimeException(e);
+    }
   }
 
   @Override
