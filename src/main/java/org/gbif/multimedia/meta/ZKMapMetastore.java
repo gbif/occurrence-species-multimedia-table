@@ -46,6 +46,11 @@ public class ZKMapMetastore implements Closeable {
     client.setData().forPath(zkNodePath, meta.getBytes(StandardCharsets.UTF_8));
   }
 
+  public String getCurrentTableName() throws Exception {
+    byte[] data = client.getData().forPath(zkNodePath);
+    return new String(data, StandardCharsets.UTF_8);
+  }
+
   private void checkPathExists() {
     try {
       if (client.checkExists().forPath(zkNodePath) == null) {

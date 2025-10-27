@@ -168,13 +168,17 @@ public class OccurrenceSpecieMultiMediaTableBuilder {
     spark.sparkContext().clearJobGroup();
 
     spark.stop();
-    updateMeta(zkQuorum, RETRY_INTERVAL_MS, zkMetastorePath, hbaseTable);
+    updateMeta(zkQuorum, RETRY_INTERVAL_MS, zkMetastorePath, hbaseTable, znodeParent);
     log.info("Updated metastore at {} with table name {}", zkMetastorePath, hbaseTable);
   }
 
-  private static void updateMeta(String zkEnsemble, int retryIntervalMs, String zkNodePath, String newTableName) throws Exception {
+  private static void updateMeta(String zkEnsemble, int retryIntervalMs, String zkNodePath, String newTableName, String hbaseZNodeParent) throws Exception {
     try (ZKMapMetastore mapMetastore = new ZKMapMetastore(zkEnsemble, retryIntervalMs, zkNodePath)) {
+      String currentTableName = mapMetastore.getCurrentTableName();
+      log.info("Current table in metastore: {}", currentTableName);
       mapMetastore.update(newTableName);
+      log.info("Metastore at {} updated to new table: {}", zkNodePath, newTableName);
+      deleteHBaseTable(currentTableName, zkEnsemble, hbaseZNodeParent);
     }
   }
 
@@ -334,4 +338,19 @@ public class OccurrenceSpecieMultiMediaTableBuilder {
     }
   }
 
-}
+  /**
+   * Deletes an HBase table with the specified name.
+   *
+   * @param tableName   the name of the HBase table
+   * @param zkQuorum    the Zookeeper quorum (comma-separated hostnames)
+   * @param znodeParent the Zookeeper znode parent path
+   * @throws Exception if an error occurs while deleting the table
+   */
+  public static void deleteHBaseTable(String tableName, String zkQuorum, String znodeParent) throws Exception {
+    try (Connection connection = createHBaseConnection(zkQuorum, znodeParent);
+         Admin admin = connection.getAdmin()) {
+        admin.deleteTable(TableName.valueOf(tableName));
+    }
+  }
+
+    }
