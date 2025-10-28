@@ -352,6 +352,7 @@ public class OccurrenceSpecieMultiMediaTableBuilder {
          Admin admin = connection.getAdmin()) {
       TableName table = TableName.valueOf(tableName);
       if (admin.tableExists(table)) {
+        admin.disableTable(table);
         admin.deleteTable(TableName.valueOf(tableName));
       }
     }
