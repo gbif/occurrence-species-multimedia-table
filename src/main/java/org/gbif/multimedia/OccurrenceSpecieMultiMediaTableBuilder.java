@@ -326,6 +326,7 @@ public class OccurrenceSpecieMultiMediaTableBuilder {
       // Define table descriptor
       TableDescriptor tableDesc = TableDescriptorBuilder
           .newBuilder(TableName.valueOf(tableName))
+          .setRegionSplitPolicyClassName("org.apache.hadoop.hbase.regionserver.DisabledRegionSplitPolicy")
           .setColumnFamily(ColumnFamilyDescriptorBuilder.newBuilder(Bytes.toBytes("media"))
                             .setCompressionType(Compression.Algorithm.SNAPPY)
                             .setDataBlockEncoding(DataBlockEncoding.FAST_DIFF)
@@ -349,8 +350,10 @@ public class OccurrenceSpecieMultiMediaTableBuilder {
   public static void deleteHBaseTable(String tableName, String zkQuorum, String znodeParent) throws Exception {
     try (Connection connection = createHBaseConnection(zkQuorum, znodeParent);
          Admin admin = connection.getAdmin()) {
+      TableName table = TableName.valueOf(tableName);
+      if (admin.tableExists(table)) {
         admin.deleteTable(TableName.valueOf(tableName));
+      }
     }
   }
-
-    }
+}
