@@ -322,6 +322,7 @@ public class OccurrenceSpecieMultiMediaTableBuilder {
       TableDescriptor tableDesc = TableDescriptorBuilder
           .newBuilder(TableName.valueOf(tableName))
           .setRegionSplitPolicyClassName("org.apache.hadoop.hbase.regionserver.DisabledRegionSplitPolicy")
+          .setMergeEnabled(false)
           .setColumnFamily(ColumnFamilyDescriptorBuilder.newBuilder(Bytes.toBytes("media"))
                             .setCompressionType(Compression.Algorithm.SNAPPY)
                             .setDataBlockEncoding(DataBlockEncoding.FAST_DIFF)
