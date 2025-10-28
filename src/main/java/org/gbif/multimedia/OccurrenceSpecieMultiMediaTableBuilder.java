@@ -309,12 +309,7 @@ public class OccurrenceSpecieMultiMediaTableBuilder {
 
       // Drop table if exists
       if (admin.tableExists(tn)) {
-        log.info("Table {} exists, deleting it first", tableName);
-        if (admin.isTableEnabled(tn)) {
-          log.info("Disabling table {}", tableName);
-          admin.disableTable(tn);
-        }
-        admin.deleteTable(tn);
+        throw new RuntimeException("Table " + tableName + " already exists. Please delete it first before recreating.");
       }
 
       // Prepare splits
@@ -350,10 +345,15 @@ public class OccurrenceSpecieMultiMediaTableBuilder {
   public static void deleteHBaseTable(String tableName, String zkQuorum, String znodeParent) throws Exception {
     try (Connection connection = createHBaseConnection(zkQuorum, znodeParent);
          Admin admin = connection.getAdmin()) {
-      TableName table = TableName.valueOf(tableName);
-      if (admin.tableExists(table)) {
-        admin.disableTable(table);
-        admin.deleteTable(TableName.valueOf(tableName));
+      TableName tn = TableName.valueOf(tableName);
+      // Drop table if exists
+      if (admin.tableExists(tn)) {
+        log.info("Table {} exists, deleting it first", tableName);
+        if (admin.isTableEnabled(tn)) {
+          log.info("Disabling table {}", tableName);
+          admin.disableTable(tn);
+        }
+        admin.deleteTable(tn);
       }
     }
   }
