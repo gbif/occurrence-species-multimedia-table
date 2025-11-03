@@ -64,16 +64,16 @@ pipeline {
             }
       }
     }
-  }
-  stage('Build and publish Docker image') {
-      when {
-        expression {
-          env.DRY_RUN_RELEASE == 'false'
+    stage('Build and publish Docker image') {
+        when {
+          expression {
+            env.DRY_RUN_RELEASE == 'false'
+          }
         }
-      }
-      steps {
-        sh 'docker/docker-build.sh ${RELEASE}'
-      }
+        steps {
+          sh 'docker/docker-build.sh ${RELEASE}'
+        }
+    }
   }
   post {
     success {
