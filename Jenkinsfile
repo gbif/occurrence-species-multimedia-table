@@ -22,9 +22,6 @@ pipeline {
     string(name: 'DEVELOPMENT_VERSION', defaultValue: '', description: 'Development version (optional)')
     booleanParam(name: 'DRY_RUN_RELEASE', defaultValue: false, description: 'Dry Run Maven release')
   }
-  environment {
-    JETTY_PORT = utils.getPort()
-  }
   stages {
 
     stage('Maven build') {
@@ -42,16 +39,6 @@ pipeline {
                    mvn -B -U clean package dependency:analyze deploy
                   '''
               }
-      }
-    }
-    stage('Build and publish Docker image') {
-      when {
-        expression {
-          env.DRY_RUN_RELEASE == 'false'
-        }
-      }
-      steps {
-        sh 'docker/docker-build.sh'
       }
     }
 
@@ -78,12 +65,22 @@ pipeline {
       }
     }
   }
-    post {
-      success {
-        echo 'Pipeline executed successfully!'
+  stage('Build and publish Docker image') {
+      when {
+        expression {
+          env.DRY_RUN_RELEASE == 'false'
+        }
       }
-      failure {
-        echo 'Pipeline execution failed!'
+      steps {
+        sh 'docker/docker-build.sh ${RELEASE}'
+      }
+  }
+  post {
+    success {
+      echo 'Pipeline executed successfully!'
+    }
+    failure {
+      echo 'Pipeline execution failed!'
     }
   }
 }

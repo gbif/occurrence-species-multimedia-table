@@ -2,6 +2,8 @@
 #Simple script for pushing a image containing the named modules build artifact
 set -e
 
+IS_M2RELEASEBUILD=$1
+
 MODULE="occurrence-species-multimedia-table"
 
 POM_VERSION=$(mvn -q -Dexec.executable="echo" -Dexec.args='${project.version}' --non-recursive exec:exec)
