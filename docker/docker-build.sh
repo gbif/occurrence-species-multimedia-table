@@ -2,11 +2,11 @@
 #Simple script for pushing a image containing the named modules build artifact
 set -e
 
-IS_M2RELEASEBUILD=$1
+POM_VERSION=$1
+IS_M2RELEASEBUILD=$2
 
 MODULE="occurrence-species-multimedia-table"
 
-POM_VERSION=$(mvn -q -Dexec.executable="echo" -Dexec.args='${project.version}' --non-recursive exec:exec)
 IMAGE=docker.gbif.org/${MODULE}:${POM_VERSION}
 IMAGE_LATEST=docker.gbif.org/${MODULE}:latest
 
