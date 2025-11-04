@@ -45,7 +45,8 @@ pipeline {
     stage('Maven release') {
       when {
           allOf {
-              expression { params.RELEASE }
+              expression { params.RELEASE };
+              branch 'master';
           }
       }
       environment {
