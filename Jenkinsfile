@@ -22,8 +22,10 @@ pipeline {
     string(name: 'DEVELOPMENT_VERSION', defaultValue: '', description: 'Development version (optional)')
     booleanParam(name: 'DRY_RUN_RELEASE', defaultValue: false, description: 'Dry Run Maven release')
   }
+  environment {
+     POM_VERSION = readMavenPom().getVersion()
+  }
   stages {
-
     stage('Maven build') {
        when {
         allOf {
@@ -71,11 +73,8 @@ pipeline {
       when { expression { env.DRY_RUN_RELEASE == 'false' } }
       steps {
         script {
-          def currentVersion = readMavenPom().getVersion()
           if (params.RELEASE) {
-            env.POM_VERSION = utils.getReleaseVersion(params.RELEASE_VERSION, currentVersion)
-          } else {
-            env.POM_VERSION = currentVersion
+            env.POM_VERSION = utils.getReleaseVersion(params.RELEASE_VERSION, env.POM_VERSION )
           }
           sh "docker/docker-build.sh ${env.POM_VERSION} ${params.RELEASE}"
         }
