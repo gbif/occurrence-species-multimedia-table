@@ -31,7 +31,10 @@ pipeline {
         }
       }
       steps {
-        checkout scm
+        checkout([$class: 'GitSCM',
+            branches: [[name: 'refs/heads/main']],
+            userRemoteConfigs: [[url: 'https://github.com/gbif/occurrence-species-multimedia-table.git']]
+        ])
         withMaven(
             globalMavenSettingsConfig: 'org.jenkinsci.plugins.configfiles.maven.GlobalMavenSettingsConfig1387378707709',
             mavenSettingsConfig: 'org.jenkinsci.plugins.configfiles.maven.MavenSettingsConfig1396361652540',
