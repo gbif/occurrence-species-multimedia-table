@@ -3,7 +3,7 @@
 pipeline {
   agent any
   tools {
-    maven 'Maven 3.8.5'
+    maven 'Maven 3.9.9'
     jdk 'OpenJDK17'
   }
   options {
@@ -53,18 +53,11 @@ pipeline {
           RELEASE_ARGS = utils.createReleaseArgs(params.RELEASE_VERSION, params.DEVELOPMENT_VERSION, params.DRY_RUN_RELEASE)
       }
       steps {
-          checkout([
-            $class: 'GitSCM',
-            branches: [[name: '*/main']],
-            userRemoteConfigs: [[url: 'https://github.com/gbif/occurrence-species-multimedia-table.git']],
-            doGenerateSubmoduleConfigurations: false,
-            extensions: [[$class: 'LocalBranch', localBranch: 'main']],
-            credentialsId: 'gbif-jenkins2'
-          ])
           withMaven(
             globalMavenSettingsConfig: 'org.jenkinsci.plugins.configfiles.maven.GlobalMavenSettingsConfig1387378707709',
             mavenSettingsConfig: 'org.jenkinsci.plugins.configfiles.maven.MavenSettingsConfig1396361652540',
             traceability: true) {
+            git 'https://github.com/gbif/gbif-api.git'
               sh '''
                 mvn -B -Dresume=false release:prepare release:perform $RELEASE_ARGS
                 '''
