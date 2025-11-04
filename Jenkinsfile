@@ -31,6 +31,7 @@ pipeline {
         }
       }
       steps {
+        checkout scm
         withMaven(
             globalMavenSettingsConfig: 'org.jenkinsci.plugins.configfiles.maven.GlobalMavenSettingsConfig1387378707709',
             mavenSettingsConfig: 'org.jenkinsci.plugins.configfiles.maven.MavenSettingsConfig1396361652540',

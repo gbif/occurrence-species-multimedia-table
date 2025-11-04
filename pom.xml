@@ -15,7 +15,7 @@
         <connection>scm:git:git@github.com:gbif/occurrence-multimedia-table.git</connection>
         <url>https://github.com/gbif/occurrence-multimedia-table/</url>
         <developerConnection>scm:git:git@github.com:gbif/occurrence-multimedia-table.git</developerConnection>
-        <tag>main</tag>
+        <tag>HEAD</tag>
     </scm>
 
     <distributionManagement>
