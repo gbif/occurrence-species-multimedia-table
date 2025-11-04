@@ -58,7 +58,8 @@ pipeline {
             branches: [[name: '*/main']],
             userRemoteConfigs: [[url: 'https://github.com/gbif/occurrence-species-multimedia-table.git']],
             doGenerateSubmoduleConfigurations: false,
-            extensions: [[$class: 'LocalBranch', localBranch: 'main']]
+            extensions: [[$class: 'LocalBranch', localBranch: 'main']],
+            credentialsId: 'gbif-jenkins2'
           ])
           withMaven(
             globalMavenSettingsConfig: 'org.jenkinsci.plugins.configfiles.maven.GlobalMavenSettingsConfig1387378707709',
