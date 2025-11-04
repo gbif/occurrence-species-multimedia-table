@@ -62,9 +62,7 @@ pipeline {
                                                   variable: 'MAVEN_SETTINGS_XML')
                           ]) {
                 git 'https://github.com/gbif/occurrence-species-multimedia-table.git'
-                sh '''
-                  mvn -s $MAVEN_SETTINGS_XML -B release:prepare release:perform $RELEASE_ARGS
-                '''
+                sh 'mvn -s $MAVEN_SETTINGS_XML -B release:prepare release:perform $RELEASE_ARGS'
               }
             }
       }
