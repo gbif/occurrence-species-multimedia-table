@@ -57,10 +57,10 @@ pipeline {
             globalMavenSettingsConfig: 'org.jenkinsci.plugins.configfiles.maven.GlobalMavenSettingsConfig1387378707709',
             mavenSettingsConfig: 'org.jenkinsci.plugins.configfiles.maven.MavenSettingsConfig1396361652540',
             traceability: true) {
-            git 'https://github.com/gbif/occurrence-species-multimedia-table.git'
-              sh '''
-                mvn -B -Dresume=false release:prepare release:perform $RELEASE_ARGS
-                '''
+            checkout scm
+            sh '''
+              mvn -B -Dresume=false release:prepare release:perform $RELEASE_ARGS
+            '''
             }
       }
     }
