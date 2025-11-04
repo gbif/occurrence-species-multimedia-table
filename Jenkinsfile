@@ -53,15 +53,17 @@ pipeline {
           RELEASE_ARGS = utils.createReleaseArgs(params.RELEASE_VERSION, params.DEVELOPMENT_VERSION, params.DRY_RUN_RELEASE)
       }
       steps {
-          checkout([$class: 'GitSCM',
-                      branches: [[name: 'refs/heads/main']],
-                      userRemoteConfigs: [[url: 'https://github.com/gbif/occurrence-species-multimedia-table.git']]
+          checkout([
+            $class: 'GitSCM',
+            branches: [[name: '*/main']],
+            userRemoteConfigs: [[url: 'https://github.com/gbif/occurrence-species-multimedia-table.git']],
+            doGenerateSubmoduleConfigurations: false,
+            extensions: [[$class: 'LocalBranch', localBranch: 'main']]
           ])
           withMaven(
             globalMavenSettingsConfig: 'org.jenkinsci.plugins.configfiles.maven.GlobalMavenSettingsConfig1387378707709',
             mavenSettingsConfig: 'org.jenkinsci.plugins.configfiles.maven.MavenSettingsConfig1396361652540',
             traceability: true) {
-              git 'https://github.com/gbif/occurrence-species-multimedia-table.git'
               sh '''
                 mvn -B -Dresume=false release:prepare release:perform $RELEASE_ARGS
                 '''
