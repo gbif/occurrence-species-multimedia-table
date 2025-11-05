@@ -9,7 +9,7 @@
     </parent>
 
     <artifactId>occurrence-species-multimedia-table</artifactId>
-    <version>1.3-SNAPSHOT</version>
+    <version>1.4-SNAPSHOT</version>
     <name>Occurrence Image HBase Cache</name>
     <description>Builds and occurrence multimedia cache</description>
     <url>http://github.org/gbif/occurrence-species-multimedia-table</url>
