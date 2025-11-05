@@ -70,13 +70,17 @@ pipeline {
       }
     }
     stage('Build and publish Docker image') {
-      when { expression { env.DRY_RUN_RELEASE == 'false' } }
+      when { expression { !params.DRY_RUN_RELEASE } }
       steps {
         script {
+          // read current pom version at build time
+          def currentPomVersion = readMavenPom().getVersion()
+          def versionToBuild = currentPomVersion
           if (params.RELEASE) {
-            env.POM_VERSION = utils.getReleaseVersion(params.RELEASE_VERSION, env.POM_VERSION )
+            // prefer explicitly provided RELEASE_VERSION, fallback to pom version
+            versionToBuild = utils.getReleaseVersion(params.RELEASE_VERSION, currentPomVersion)
           }
-          sh "docker/docker-build.sh ${env.POM_VERSION} ${params.RELEASE}"
+          sh "docker/docker-build.sh ${versionToBuild} ${params.RELEASE}"
         }
       }
     }
