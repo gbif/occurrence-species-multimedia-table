@@ -23,7 +23,7 @@ pipeline {
     booleanParam(name: 'DRY_RUN_RELEASE', defaultValue: false, description: 'Dry Run Maven release')
   }
   environment {
-     POM_VERSION = readMavenPom().getVersion()
+     INITIAL_POM_VERSION = readMavenPom().getVersion()
   }
   stages {
     stage('Maven build') {
@@ -73,12 +73,12 @@ pipeline {
       when { expression { !params.DRY_RUN_RELEASE } }
       steps {
         script {
-          // read current pom version at build time
-          def currentPomVersion = readMavenPom().getVersion()
-          def versionToBuild = currentPomVersion
+          // for release builds use the initial pom version (release plugin will have bumped the POM later)
+          def versionToBuild
           if (params.RELEASE) {
-            // prefer explicitly provided RELEASE_VERSION, fallback to pom version
-            versionToBuild = utils.getReleaseVersion(params.RELEASE_VERSION, currentPomVersion)
+            versionToBuild = utils.getReleaseVersion(params.RELEASE_VERSION, env.INITIAL_POM_VERSION)
+          } else {
+            versionToBuild = readMavenPom().getVersion()
           }
           sh "docker/docker-build.sh ${versionToBuild} ${params.RELEASE}"
         }
