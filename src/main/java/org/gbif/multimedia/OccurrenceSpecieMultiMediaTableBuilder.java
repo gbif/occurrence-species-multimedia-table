@@ -178,7 +178,9 @@ public class OccurrenceSpecieMultiMediaTableBuilder {
       log.info("Current table in metastore: {}", currentTableName);
       mapMetastore.update(newTableName);
       log.info("Metastore at {} updated to new table: {}", zkNodePath, newTableName);
-      deleteHBaseTable(currentTableName, zkEnsemble, hbaseZNodeParent);
+      if (currentTableName != null && !currentTableName.isEmpty()) {
+        deleteHBaseTable(currentTableName, zkEnsemble, hbaseZNodeParent);
+      }
     }
   }
 
