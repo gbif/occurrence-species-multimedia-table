@@ -32,7 +32,7 @@ spec:
     - "gbif-zookeeper-server-default-0.gbif-zookeeper-server-default.test.svc.cluster.local:2282,gbif-zookeeper-server-default-1.gbif-zookeeper-server-default.test.svc.cluster.local:2282,gbif-zookeeper-server-default-2.gbif-zookeeper-server-default.test.svc.cluster.local:2282"
     - "/znode-93f9cdb5-d146-46da-9f80-e8546468b0fe/hbase"
     - "/test/meta/occurrence_species_multimedia_table"
-    - "20262604_1613"
+    - "20262604_1618"
   sparkConf:
     "spark.driver.extraJavaOptions": "-XX:+UseG1GC -XX:InitiatingHeapOccupancyPercent=35"
     "spark.executor.extraJavaOptions": "-XX:+UseG1GC -XX:InitiatingHeapOccupancyPercent=35 -XX:ConcGCThread=20"
