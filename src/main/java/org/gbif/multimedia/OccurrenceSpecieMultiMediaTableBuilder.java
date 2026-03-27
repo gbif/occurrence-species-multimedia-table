@@ -237,6 +237,7 @@ public class OccurrenceSpecieMultiMediaTableBuilder {
 
     Dataset<Row> df = spark.sql(String.format(
         "SELECT o.taxonkey, " +
+            "o.datasetkey, " +
             "COALESCE(m.identifier, '') AS identifier, " +
             "COALESCE(m.type, '') AS type, " +
             "m.title, m.gbifid, m.rightsholder, m.license " +
@@ -247,14 +248,21 @@ public class OccurrenceSpecieMultiMediaTableBuilder {
     Dataset<Row> globalTotals = df.groupBy("taxonkey", "type")
         .agg(functions.count("identifier").alias("totalMultimediaCount"));
 
-    // Add a random column, this to ensure multiple genus are showed per chunk
-    Dataset<Row> randomized = df.withColumn("randByGenus", functions.rand());
+    // Interleave by datasetkey so early chunks are not dominated by a single large dataset.
+    WindowSpec perDatasetWindow = Window.partitionBy("taxonkey", "type", "datasetkey")
+        .orderBy(functions.rand());
 
-    // Partition by taxonkey/type and order by the random column when assigning chunkIndex
-    WindowSpec w = Window.partitionBy("taxonkey", "type").orderBy("identifier");
-    Dataset<Row> withChunkIndex = randomized.withColumn(
+    Dataset<Row> withDatasetSequence = df.withColumn(
+        "datasetRowNum",
+        functions.row_number().over(perDatasetWindow)
+    );
+
+    WindowSpec interleaveWindow = Window.partitionBy("taxonkey", "type")
+        .orderBy(functions.col("datasetRowNum"), functions.rand());
+
+    Dataset<Row> withChunkIndex = withDatasetSequence.withColumn(
         "chunkIndex",
-        functions.floor(functions.row_number().over(w).minus(1).divide(MAX_MEDIAINFOS_PER_CELL))
+        functions.floor(functions.row_number().over(interleaveWindow).minus(1).divide(MAX_MEDIAINFOS_PER_CELL))
     );
 
     Dataset<Row> withMediaInfo = withChunkIndex.select(
