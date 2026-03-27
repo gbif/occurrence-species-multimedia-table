@@ -234,52 +234,115 @@ public class OccurrenceSpecieMultiMediaTableBuilder {
    * @return a Dataset<Row> with columns: taxonKey, type, identifiers (array of strings)
    */
   private static Dataset<Row> createSpeciesMediaDataset(SparkSession spark, String sourceCatalog, Integer partitions) {
+    // honor requested shuffle partitions (if provided) to control parallelism for aggregations
+    if (partitions != null) {
+      spark.sqlContext().setConf("spark.sql.shuffle.partitions", partitions.toString());
+    }
 
+    // Include format (not coalesced) so we can order by it and keep NULLs last
     Dataset<Row> df = spark.sql(String.format(
         "SELECT o.taxonkey, " +
             "o.datasetkey, " +
             "COALESCE(m.identifier, '') AS identifier, " +
             "COALESCE(m.type, '') AS type, " +
+            "m.format, " +
             "m.title, m.gbifid, m.rightsholder, m.license " +
             "FROM %1$s.occurrence o " +
             "JOIN %1$s.occurrence_multimedia m ON o.gbifid = m.gbifid " +
             "WHERE m.identifier IS NOT NULL AND o.taxonkey IS NOT NULL", sourceCatalog));
 
+    // Total multimedia count per taxonKey/type (kept for the HBase metadata column)
     Dataset<Row> globalTotals = df.groupBy("taxonkey", "type")
         .agg(functions.count("identifier").alias("totalMultimediaCount"));
+
+    // Counts per (taxonkey, type, format) to be used for ordering (count DESC)
+    Dataset<Row> formatCounts = df.groupBy("taxonkey", "type", "format")
+        .agg(functions.count("identifier").alias("formatCount"));
+
+    // Attach the per-format counts back to each multimedia row
+    Dataset<Row> dfWithFormatCounts = df.join(formatCounts, new String[]{"taxonkey", "type", "format"}, "left");
 
     // Interleave by datasetkey so early chunks are not dominated by a single large dataset.
     WindowSpec perDatasetWindow = Window.partitionBy("taxonkey", "type", "datasetkey")
         .orderBy(functions.rand());
 
-    Dataset<Row> withDatasetSequence = df.withColumn(
+    Dataset<Row> withDatasetSequence = dfWithFormatCounts.withColumn(
         "datasetRowNum",
         functions.row_number().over(perDatasetWindow)
     );
 
-    WindowSpec interleaveWindow = Window.partitionBy("taxonkey", "type")
-        .orderBy(functions.col("datasetRowNum"), functions.rand());
+    // Build a deterministic ordering for each datasetkey per taxon/type using a hash of datasetkey.
+    // This is deterministic and spreads datasets in a pseudo-random order without relying on
+    // non-deterministic rand() at planning time.
+    Dataset<Row> datasetOrder = dfWithFormatCounts.select("taxonkey", "type", "datasetkey")
+        .distinct()
+        .withColumn("datasetOrder",
+            functions.row_number().over(
+                Window.partitionBy("taxonkey", "type").orderBy(functions.abs(functions.hash(functions.col("datasetkey"))))
+            )
+        );
 
-    Dataset<Row> withChunkIndex = withDatasetSequence.withColumn(
+    // Attach datasetOrder to each row
+    Dataset<Row> withDatasetOrder = withDatasetSequence.join(datasetOrder, new String[]{"taxonkey", "type", "datasetkey"}, "left");
+
+    // FIRST: assign chunkIndex using a strict round-robin across datasets so early chunks
+    // contain a balanced representation. We only use datasetRowNum + datasetOrder + rand
+    // here to avoid format preferences influencing chunk assignment.
+    WindowSpec roundRobinWindow = Window.partitionBy("taxonkey", "type")
+        .orderBy(
+            functions.col("datasetRowNum").asc(),
+            functions.col("datasetOrder").asc(),
+            functions.rand()
+        );
+
+    Dataset<Row> withChunkIndex = withDatasetOrder.withColumn(
         "chunkIndex",
-        functions.floor(functions.row_number().over(interleaveWindow).minus(1).divide(MAX_MEDIAINFOS_PER_CELL))
+        functions.floor(functions.row_number().over(roundRobinWindow).minus(1).divide(MAX_MEDIAINFOS_PER_CELL))
     );
 
-    Dataset<Row> withMediaInfo = withChunkIndex.select(
-        functions.col("taxonkey"),
-        functions.col("type"),
-        functions.col("chunkIndex"),
+    // SECOND: build a mediaInfo struct and compute a rank inside each chunk according to the
+    // format/license preferences so we can order items within each chunk without affecting
+    // the chunk assignment.
+    Dataset<Row> withMediaInfoAndRank = withChunkIndex.withColumn(
+        "mediaInfoStruct",
         functions.struct(
             functions.col("identifier"),
             functions.col("title"),
             functions.col("gbifid"),
             functions.col("rightsholder"),
             functions.col("license")
-        ).alias("mediaInfo")
+        )
+    ).withColumn(
+        "rankWithinChunk",
+        functions.row_number().over(
+            Window.partitionBy("taxonkey", "type", "chunkIndex").orderBy(
+                // non-null formats first
+                functions.expr("format IS NULL").asc(),
+                // prefer image-like formats
+                functions.expr("lower(format) LIKE 'image%'").desc(),
+                // larger format groups next
+                functions.col("formatCount").desc(),
+                // push rows with null license to the end
+                functions.expr("license IS NULL").asc(),
+                // tie-breaker
+                functions.rand()
+            )
+        )
     );
 
-    Dataset<Row> chunked = withMediaInfo.groupBy("taxonkey", "type", "chunkIndex")
-        .agg(functions.collect_list("mediaInfo").alias("mediaInfos"));
+    // Aggregate: collect (rank, mediaInfoStruct) and then sort by rank to produce ordered mediaInfos
+    Dataset<Row> chunked = withMediaInfoAndRank.groupBy("taxonkey", "type", "chunkIndex")
+        .agg(
+            functions.collect_list(functions.struct(functions.col("rankWithinChunk"), functions.col("mediaInfoStruct")).alias("items")).alias("items")
+        ).withColumn(
+            "mediaInfos",
+            functions.expr("transform(sort_array(items), x -> x.mediaInfoStruct)")
+        ).select(
+            functions.col("taxonkey"),
+            functions.col("type"),
+            functions.col("chunkIndex"),
+            functions.col("mediaInfos")
+        );
 
     return chunked.join(globalTotals, new String[]{"taxonkey", "type"}, "inner");
   }

@@ -1,0 +1,90 @@
+[INFO] Scanning for projects...
+[INFO] 
+[INFO] ----------------< org.gbif:occurrence-multimedia-table >----------------
+[INFO] Building Occurrence Image HBase Cache 1.0-SNAPSHOT
+[INFO]   from pom.xml
+[INFO] --------------------------------[ jar ]---------------------------------
+[WARNING] 2 problems were encountered while building the effective model for org.apache.yetus:audience-annotations:jar:0.5.0 during dependency collection step for project (use -X to see details)
+[INFO] 
+[INFO] --- clean:3.2.0:clean (default-clean) @ occurrence-multimedia-table ---
+[INFO] Deleting /Users/xrc439/dev/gbif/occurrence-image-table/target
+[INFO] 
+[INFO] --- resources:3.3.1:resources (default-resources) @ occurrence-multimedia-table ---
+[INFO] Copying 0 resource from src/main/resources to target/classes
+[INFO] 
+[INFO] --- compiler:3.13.0:compile (default-compile) @ occurrence-multimedia-table ---
+[INFO] Recompiling the module because of changed source code.
+[INFO] Compiling 1 source file with javac [debug target 17] to target/classes
+[INFO] 
+[INFO] --- resources:3.3.1:testResources (default-testResources) @ occurrence-multimedia-table ---
+[INFO] skip non existing resourceDirectory /Users/xrc439/dev/gbif/occurrence-image-table/src/test/resources
+[INFO] 
+[INFO] --- compiler:3.13.0:testCompile (default-testCompile) @ occurrence-multimedia-table ---
+[INFO] Recompiling the module because of changed dependency.
+[INFO] 
+[INFO] --- surefire:3.2.5:test (default-test) @ occurrence-multimedia-table ---
+[INFO] 
+[INFO] --- jar:3.4.1:jar (default-jar) @ occurrence-multimedia-table ---
+[INFO] Building jar: /Users/xrc439/dev/gbif/occurrence-image-table/target/occurrence-multimedia-table-1.0-SNAPSHOT.jar
+[INFO] 
+[INFO] --- shade:3.6.1:shade (default) @ occurrence-multimedia-table ---
+[INFO] Minimizing jar org.gbif:occurrence-multimedia-table:jar:1.0-SNAPSHOT
+[WARNING] Removing module-info from occurrence-multimedia-table-1.0-SNAPSHOT.jar
+[WARNING] Discovered module-info.class. Shading will break its strong encapsulation.
+[WARNING] Discovered module-info.class. Shading will break its strong encapsulation.
+[WARNING] Discovered module-info.class. Shading will break its strong encapsulation.
+[WARNING] byte-buddy-1.14.9.jar, commons-codec-1.16.1.jar, commons-io-2.16.1.jar, hbase-shaded-gson-4.1.4.jar, jackson-core-2.17.0.jar, jackson-databind-2.17.0.jar, log4j-api-2.20.0.jar, picocli-4.7.6.jar, slf4j-api-2.0.9.jar define 1 overlapping classes: 
+[WARNING]   - META-INF.versions.9.module-info
+[WARNING] commons-codec-1.16.1.jar, commons-io-2.16.1.jar, commons-lang3-3.12.0.jar, javax.activation-api-1.2.0.jar, javax.annotation-api-1.2.jar, slf4j-api-2.0.9.jar define 1 overlapping resource: 
+[WARNING]   - META-INF/LICENSE.txt
+[WARNING] audience-annotations-0.13.0.jar, byte-buddy-1.14.9.jar, commons-codec-1.16.1.jar, commons-crypto-1.1.0.jar, commons-io-2.16.1.jar, commons-lang3-3.12.0.jar, error_prone_annotations-2.18.0.jar, hbase-client-2.4.17.jar, hbase-common-2.4.17.jar, hbase-hadoop-compat-2.4.17.jar, hbase-hadoop2-compat-2.4.17.jar, hbase-logging-2.4.17.jar, hbase-metrics-2.4.17.jar, hbase-metrics-api-2.4.17.jar, hbase-protocol-2.4.17.jar, hbase-protocol-shaded-2.4.17.jar, hbase-shaded-gson-4.1.4.jar, hbase-shaded-miscellaneous-4.1.4.jar, hbase-shaded-netty-4.1.4.jar, hbase-shaded-protobuf-4.1.4.jar, hbase-unsafe-4.1.4.jar, htrace-core4-4.2.0-incubating.jar, jackson-annotations-2.17.0.jar, jackson-core-2.17.0.jar, jackson-databind-2.17.0.jar, jackson-module-scala_2.12-2.17.0.jar, javax.activation-api-1.2.0.jar, javax.annotation-api-1.2.jar, jcodings-1.0.55.jar, joni-2.1.31.jar, log4j-api-2.20.0.jar, log4j-core-2.20.0.jar, log4j-slf4j-impl-2.20.0.jar, metrics-core-4.2.19.jar, occurrence-multimedia-table-1.0-SNAPSHOT.jar, paranamer-2.8.jar, picocli-4.7.6.jar, protobuf-java-2.5.0.jar, scala-library-2.12.18.jar, slf4j-api-2.0.9.jar, zookeeper-3.6.3.jar, zookeeper-jute-3.6.3.jar define 1 overlapping resource: 
+[WARNING]   - META-INF/MANIFEST.MF
+[WARNING] audience-annotations-0.13.0.jar, hbase-client-2.4.17.jar, hbase-common-2.4.17.jar, hbase-hadoop-compat-2.4.17.jar, hbase-hadoop2-compat-2.4.17.jar, hbase-logging-2.4.17.jar, hbase-metrics-2.4.17.jar, hbase-metrics-api-2.4.17.jar, hbase-protocol-2.4.17.jar, hbase-protocol-shaded-2.4.17.jar, hbase-shaded-gson-4.1.4.jar, hbase-shaded-miscellaneous-4.1.4.jar, hbase-shaded-netty-4.1.4.jar, hbase-shaded-protobuf-4.1.4.jar, hbase-unsafe-4.1.4.jar, htrace-core4-4.2.0-incubating.jar, log4j-api-2.20.0.jar, log4j-core-2.20.0.jar, log4j-slf4j-impl-2.20.0.jar define 1 overlapping resource: 
+[WARNING]   - META-INF/DEPENDENCIES
+[WARNING] hbase-protocol-shaded-2.4.17.jar, htrace-core4-4.2.0-incubating.jar, jackson-annotations-2.17.0.jar define 2 overlapping resources: 
+[WARNING]   - META-INF/maven/com.fasterxml.jackson.core/jackson-annotations/pom.properties
+[WARNING]   - META-INF/maven/com.fasterxml.jackson.core/jackson-annotations/pom.xml
+[WARNING] hbase-protocol-shaded-2.4.17.jar, htrace-core4-4.2.0-incubating.jar, jackson-core-2.17.0.jar define 2 overlapping resources: 
+[WARNING]   - META-INF/maven/com.fasterxml.jackson.core/jackson-core/pom.properties
+[WARNING]   - META-INF/maven/com.fasterxml.jackson.core/jackson-core/pom.xml
+[WARNING] hbase-protocol-shaded-2.4.17.jar, htrace-core4-4.2.0-incubating.jar, jackson-databind-2.17.0.jar define 2 overlapping resources: 
+[WARNING]   - META-INF/maven/com.fasterxml.jackson.core/jackson-databind/pom.properties
+[WARNING]   - META-INF/maven/com.fasterxml.jackson.core/jackson-databind/pom.xml
+[WARNING] hbase-protocol-shaded-2.4.17.jar, htrace-core4-4.2.0-incubating.jar define 4 overlapping resources: 
+[WARNING]   - META-INF/maven/commons-logging/commons-logging/pom.properties
+[WARNING]   - META-INF/maven/commons-logging/commons-logging/pom.xml
+[WARNING]   - META-INF/maven/org.apache.htrace/htrace-core4/pom.properties
+[WARNING]   - META-INF/maven/org.apache.htrace/htrace-core4/pom.xml
+[WARNING] hbase-protocol-2.4.17.jar, hbase-protocol-shaded-2.4.17.jar define 24 overlapping resources: 
+[WARNING]   - AccessControl.proto
+[WARNING]   - Admin.proto
+[WARNING]   - Cell.proto
+[WARNING]   - Client.proto
+[WARNING]   - ClusterId.proto
+[WARNING]   - ClusterStatus.proto
+[WARNING]   - Comparator.proto
+[WARNING]   - Encryption.proto
+[WARNING]   - ErrorHandling.proto
+[WARNING]   - FS.proto
+[WARNING]   - 14 more...
+[WARNING] commons-codec-1.16.1.jar, commons-io-2.16.1.jar, commons-lang3-3.12.0.jar define 1 overlapping resource: 
+[WARNING]   - META-INF/NOTICE.txt
+[WARNING] audience-annotations-0.13.0.jar, byte-buddy-1.14.9.jar, hbase-client-2.4.17.jar, hbase-common-2.4.17.jar, hbase-hadoop-compat-2.4.17.jar, hbase-hadoop2-compat-2.4.17.jar, hbase-logging-2.4.17.jar, hbase-metrics-2.4.17.jar, hbase-metrics-api-2.4.17.jar, hbase-protocol-2.4.17.jar, hbase-protocol-shaded-2.4.17.jar, hbase-shaded-gson-4.1.4.jar, hbase-shaded-miscellaneous-4.1.4.jar, hbase-shaded-netty-4.1.4.jar, hbase-shaded-protobuf-4.1.4.jar, hbase-unsafe-4.1.4.jar, htrace-core4-4.2.0-incubating.jar, jackson-annotations-2.17.0.jar, jackson-core-2.17.0.jar, jackson-databind-2.17.0.jar, log4j-api-2.20.0.jar, log4j-core-2.20.0.jar, log4j-slf4j-impl-2.20.0.jar define 1 overlapping resource: 
+[WARNING]   - META-INF/NOTICE
+[WARNING] audience-annotations-0.13.0.jar, byte-buddy-1.14.9.jar, hbase-client-2.4.17.jar, hbase-common-2.4.17.jar, hbase-hadoop-compat-2.4.17.jar, hbase-hadoop2-compat-2.4.17.jar, hbase-logging-2.4.17.jar, hbase-metrics-2.4.17.jar, hbase-metrics-api-2.4.17.jar, hbase-protocol-2.4.17.jar, hbase-protocol-shaded-2.4.17.jar, hbase-shaded-netty-4.1.4.jar, hbase-shaded-protobuf-4.1.4.jar, hbase-unsafe-4.1.4.jar, htrace-core4-4.2.0-incubating.jar, jackson-annotations-2.17.0.jar, jackson-core-2.17.0.jar, jackson-databind-2.17.0.jar, jackson-module-scala_2.12-2.17.0.jar, log4j-api-2.20.0.jar, log4j-core-2.20.0.jar, log4j-slf4j-impl-2.20.0.jar define 1 overlapping resource: 
+[WARNING]   - META-INF/LICENSE
+[WARNING] maven-shade-plugin has detected that some files are
+[WARNING] present in two or more JARs. When this happens, only one
+[WARNING] single version of the file is copied to the uber jar.
+[WARNING] Usually this is not harmful and you can skip these warnings,
+[WARNING] otherwise try to manually exclude artifacts based on
+[WARNING] mvn dependency:tree -Ddetail=true and the above output.
+[WARNING] See https://maven.apache.org/plugins/maven-shade-plugin/
+[INFO] Minimized 24619 -> 11591 (47%)
+[INFO] Attaching shaded artifact.
+[INFO] ------------------------------------------------------------------------
+[INFO] BUILD SUCCESS
+[INFO] ------------------------------------------------------------------------
+[INFO] Total time:  9.131 s
+[INFO] Finished at: 2025-10-06T15:56:05+02:00
+[INFO] ------------------------------------------------------------------------
