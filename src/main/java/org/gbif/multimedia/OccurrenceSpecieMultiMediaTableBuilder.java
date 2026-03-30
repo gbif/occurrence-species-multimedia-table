@@ -26,6 +26,8 @@ import org.apache.spark.sql.SparkSession;
 import org.apache.spark.sql.expressions.Window;
 import org.apache.spark.sql.expressions.WindowSpec;
 import org.apache.spark.sql.functions;
+import org.apache.spark.storage.StorageLevel;
+import org.apache.spark.sql.Column;
 import org.gbif.multimedia.meta.ZKMapMetastore;
 
 /**
@@ -242,17 +244,37 @@ public class OccurrenceSpecieMultiMediaTableBuilder {
     // Read occurrence and occurrence_multimedia as separate tables and join explicitly to avoid
     // nested planner ambiguities. Select and alias columns explicitly so Spark has no ambiguity
     // about which relation a column belongs to.
-    Dataset<Row> occ = spark.table(sourceCatalog + ".occurrence").select("gbifid", "taxonkey");
+    // Read occurrence table and detect available taxon rank column names safely
+    Dataset<Row> occTable = spark.table(sourceCatalog + ".occurrence");
+    List<String> occCols = Arrays.asList(occTable.columns());
+    // Candidate column names in order of preference
+    List<String> rankCandidates = Arrays.asList("taxonrank", "taxonRank", "taxon_rank", "rank");
+    Column taxonRankCol = null;
+    List<Column> found = new ArrayList<>();
+    for (String c : rankCandidates) {
+      if (occCols.contains(c)) {
+        found.add(occTable.col(c));
+      }
+    }
+    if (found.isEmpty()) {
+      taxonRankCol = functions.lit("UNRANKED");
+    } else {
+      Column[] arr = found.toArray(new Column[0]);
+      taxonRankCol = functions.coalesce(arr).alias("taxonRankRaw");
+    }
+    Dataset<Row> occ = occTable.select(occTable.col("gbifid"), occTable.col("taxonkey")).withColumn("taxonRankRaw", taxonRankCol);
     Dataset<Row> mm = spark.table(sourceCatalog + ".occurrence_multimedia").select(
         "gbifid", "datasetkey", "identifier", "type", "format", "title", "license", "rightsHolder");
 
     Dataset<Row> df = occ.join(mm, occ.col("gbifid").equalTo(mm.col("gbifid")), "inner")
         .filter(mm.col("identifier").isNotNull().and(occ.col("taxonkey").isNotNull()))
         .select(
-            occ.col("taxonkey"),
+                occ.col("taxonkey"),
             mm.col("datasetkey"),
             functions.coalesce(mm.col("identifier"), functions.lit("")).alias("identifier"),
             functions.coalesce(mm.col("type"), functions.lit("")).alias("mediaType"),
+                // carry taxon rank from occurrence table
+                functions.coalesce(occ.col("taxonRankRaw"), functions.lit("UNRANKED")).alias("taxonRankRaw"),
             mm.col("format"),
             mm.col("title"),
             mm.col("gbifid"),
@@ -270,52 +292,154 @@ public class OccurrenceSpecieMultiMediaTableBuilder {
     // rely on per-row attributes (format null, image-like, license null) and a random tie-breaker.
     // Use `df` directly for downstream processing.
 
-    // Per-dataset sequence number (randomized per dataset to interleave rows)
-    WindowSpec perDatasetWindow = Window.partitionBy("taxonkey", "mediaType", "datasetkey").orderBy(functions.rand());
-    Dataset<Row> withDatasetSequence = df.withColumn("datasetRowNum", functions.row_number().over(perDatasetWindow));
+    // Persist joined DF to avoid recomputation and planner ambiguity
+    df = df.persist(StorageLevel.MEMORY_AND_DISK());
+
+    // Normalize and compute taxon rank priority per taxonkey
+    Dataset<Row> taxonRankMap = df.select("taxonkey", "taxonRankRaw").distinct()
+        .withColumn("taxonRankNorm", functions.upper(functions.trim(functions.coalesce(functions.col("taxonRankRaw"), functions.lit("UNRANKED")))));
+
+    // Map ranks to priorities so that FORM is highest and UNRANKED is lowest
+    Column rank = functions.col("taxonRankNorm");
+    taxonRankMap = taxonRankMap.withColumn("taxonRankPriority",
+        functions.when(rank.equalTo("FORM"), functions.lit(13))
+            .when(rank.equalTo("VARIETY"), functions.lit(12))
+            .when(rank.equalTo("SUBSPECIES"), functions.lit(11))
+            .when(rank.equalTo("SPECIES"), functions.lit(10))
+            .when(rank.equalTo("SUBGENUS"), functions.lit(9))
+            .when(rank.equalTo("GENUS"), functions.lit(8))
+            .when(rank.equalTo("SUBFAMILY"), functions.lit(7))
+            .when(rank.equalTo("FAMILY"), functions.lit(6))
+            .when(rank.equalTo("ORDER"), functions.lit(5))
+            .when(rank.equalTo("CLASS"), functions.lit(4))
+            .when(rank.equalTo("PHYLUM"), functions.lit(3))
+            .when(rank.equalTo("KINGDOM"), functions.lit(2))
+            .when(rank.equalTo("UNRANKED"), functions.lit(1))
+            .otherwise(functions.lit(1))
+    );
+
+    // Add a deterministic per-row seed for ordering (stable across runs) based on datasetkey+gbifid
+    Dataset<Row> dfWithSeed = df.withColumn("orderSeed", functions.abs(functions.hash(functions.concat(functions.col("datasetkey"), functions.col("gbifid")))));
+
+    // Per-dataset sequence number (deterministic pseudo-random via orderSeed) to interleave rows.
+    // Partition by taxonkey + datasetkey (not mediaType) so items from the same dataset are
+    // interleaved across mediaTypes. This avoids mediaType mislabeling (e.g., PDFs marked as StillImage)
+    // causing PDFs to be treated as images in the sequencing logic.
+    WindowSpec perDatasetWindow = Window.partitionBy("taxonkey", "datasetkey").orderBy(functions.col("orderSeed"));
+    Dataset<Row> withDatasetSequence = dfWithSeed.withColumn("datasetRowNum", functions.row_number().over(perDatasetWindow));
 
     // Deterministic dataset ordering per taxon/mediaType using hash(datasetkey)
-    Dataset<Row> datasetOrder = withDatasetSequence.select("taxonkey", "mediaType", "datasetkey").distinct()
+    // Deterministic dataset ordering per taxon (not per mediaType). This ensures dataset ordering
+    // is consistent even when mediaType labels are inconsistent.
+    Dataset<Row> datasetOrder = withDatasetSequence.select("taxonkey", "datasetkey").distinct()
         .withColumn("datasetOrder", functions.row_number().over(
-            Window.partitionBy("taxonkey", "mediaType").orderBy(functions.abs(functions.hash(functions.col("datasetkey"))))
+            Window.partitionBy("taxonkey").orderBy(functions.abs(functions.hash(functions.col("datasetkey"))))
         ));
 
-    Dataset<Row> withDatasetOrder = withDatasetSequence.join(datasetOrder, new String[]{"taxonkey", "mediaType", "datasetkey"}, "left");
+    Dataset<Row> withDatasetOrder = withDatasetSequence.join(datasetOrder, new String[]{"taxonkey", "datasetkey"}, "left");
 
-    // Assign chunkIndex by strict round-robin across datasets (datasetRowNum, datasetOrder)
-    WindowSpec roundRobinWindow = Window.partitionBy("taxonkey", "mediaType")
-        .orderBy(functions.col("datasetRowNum"), functions.col("datasetOrder"), functions.rand());
+    // Assign chunkIndex by strict round-robin across datasets, but prioritize image MIME types
+    // so non-image formats (pdf, text, etc.) are assigned to later chunks. Within image-first
+    // ordering we still prefer rows with a license. Final tie-breakers are datasetRowNum,
+    // datasetOrder and deterministic orderSeed.
+    // Normalize format/identifier/title and build boolean flags for image/pdf detection.
+    Column formatCol = functions.lower(functions.coalesce(functions.col("format"), functions.lit("")));
+    Column idCol = functions.lower(functions.coalesce(functions.col("identifier"), functions.lit("")));
+    Column titleCol = functions.lower(functions.coalesce(functions.col("title"), functions.lit("")));
 
-    Dataset<Row> withChunkIndex = withDatasetOrder.withColumn("chunkIndex",
+    // isPdf: true for PDF MIME types or URLs/filenames ending in .pdf. Detect pdf first so we can
+    // exclude mis-labelled 'image/pdf' entries from being treated as images.
+    Column isPdfExpr = formatCol.rlike("(?i)\\bpdf\\b")
+        .or(idCol.rlike("(?i)\\.pdf(\\?.*)?$") )
+        .or(titleCol.rlike("(?i)\\.pdf(\\?.*)?$") );
+
+    // isImage: true for recognized image MIME types or URLs/filenames with common image extensions
+    // Expand detection to cover variants like 'jpeg', 'jpg', 'format/jpg', and plain 'image'.
+    Column isImageRaw = formatCol.rlike("(?i)^(?:\\s*image/)")
+        .or(formatCol.rlike("(?i)\\b(?:jpg|jpeg|png|gif|tif|tiff|bmp|webp|pjpeg|heic)\\b"))
+        .or(formatCol.equalTo("image"))
+        .or(formatCol.equalTo("jpeg"))
+        .or(formatCol.rlike("(?i)format\\/?jpe?g"))
+        .or(idCol.rlike("(?i)\\.(jpg|jpeg|png|gif|tif|tiff|bmp|webp)(\\?.*)?$$"))
+        .or(titleCol.rlike("(?i)\\.(jpg|jpeg|png|gif|tif|tiff|bmp|webp)(\\?.*)?$$"));
+
+    // Exclude any rows that match PDF patterns from being considered images (handles 'image/pdf').
+    Column isImageExpr = isImageRaw.and(functions.not(isPdfExpr));
+
+    // Materialize the flags as columns so they can be referenced consistently in multiple windows
+    Dataset<Row> withDatasetFlags = withDatasetOrder.withColumn("isImage", isImageExpr).withColumn("isPdf", isPdfExpr);
+
+    // Create a numeric score to enforce global preference: images highest, neutral middle, pdf lowest.
+    // This makes the ordering robust against datasetRowNum interleaving.
+    Dataset<Row> withMediaScore = withDatasetFlags.withColumn("mediaScore",
+        // Strongly prefer images over others to avoid PDFs appearing before images.
+        // Demote PDFs to a very low score so they are always ordered after images and other media.
+        functions.when(functions.col("isImage"), functions.lit(100))
+                 .when(functions.col("isPdf"), functions.lit(-1000))
+                 .otherwise(functions.lit(10))
+    );
+
+    // Round-robin ordering: prefer higher mediaScore (images), then licensed rows; finally interleave by datasetRowNum/datasetOrder/orderSeed
+    // Round-robin partition by taxonkey and mediaType so chunk assignment is per mediaType.
+    // We rely on improved isPdf/isImage detection to ensure PDFs (even if labeled StillImage)
+    // are not treated as images during chunk assignment.
+    // Partition by taxonkey only so chunk assignment interleaves across mediaTypes and is robust
+    // against mediaType mislabeling (e.g., PDFs labeled as StillImage).
+    WindowSpec roundRobinWindow = Window.partitionBy("taxonkey")
+        .orderBy(
+            functions.col("mediaScore").desc(),
+            // prefer rows with an explicit format (non-null) so unknown-format rows don't jump ahead of explicit images
+            functions.expr("format IS NULL").asc(),
+            // prefer non-pdf rows to further demote PDFs even if other factors are similar
+            functions.col("isPdf").asc(),
+            functions.expr("license IS NULL").asc(),
+            functions.col("datasetRowNum"),
+            functions.col("datasetOrder"),
+            functions.col("orderSeed")
+        );
+
+    Dataset<Row> withChunkIndex = withMediaScore.withColumn("chunkIndex",
         functions.floor(functions.row_number().over(roundRobinWindow).minus(1).divide(MAX_MEDIAINFOS_PER_CELL)));
 
     // Build mediaInfo struct and compute within-dataset rank (by preferences) inside each chunk
     Dataset<Row> withMediaInfo = withChunkIndex.withColumn("mediaInfoStruct",
         functions.struct(functions.col("identifier"), functions.col("title"), functions.col("gbifid"), functions.col("rightsholder"), functions.col("license")));
 
+    // Within each dataset inside a chunk prefer images first (regardless of whether format is set),
+    // then prefer rows with an explicit format, then non-pdf, licensed rows, and finally deterministic seed
     Dataset<Row> withWithinDatasetRank = withMediaInfo.withColumn("withinDatasetRank",
         functions.row_number().over(
             Window.partitionBy("taxonkey", "mediaType", "chunkIndex", "datasetkey").orderBy(
+                functions.col("isImage").desc(),
                 functions.expr("format IS NULL").asc(),
-                functions.expr("lower(format) LIKE 'image%'").desc(),
+                functions.col("isPdf").asc(),
                 functions.expr("license IS NULL").asc(),
-                functions.rand()
+                functions.col("orderSeed")
             )
         )
     );
 
     // Aggregate per chunk: collect tuples (r,d,rnd,mi), sort them and extract mediaInfo structs in order
+    // Aggregate per chunk: collect tuples that include a negated mediaScore so sort_array will
+    // place higher-scored media (images) first and PDFs (with very low scores) last.
     Dataset<Row> chunked = withWithinDatasetRank.groupBy("taxonkey", "mediaType", "chunkIndex")
         .agg(functions.collect_list(functions.struct(
+            // Negate mediaScore so that sort_array ascending sorts images (high score -> large negative) first
+            functions.expr("-mediaScore").alias("scoreNeg"),
             functions.col("withinDatasetRank").alias("r"),
             functions.col("datasetOrder").alias("d"),
-            functions.rand().alias("rnd"),
+            functions.col("orderSeed").alias("rnd"),
             functions.col("mediaInfoStruct").alias("mi")
         )).alias("items"))
         .withColumn("mediaInfos", functions.expr("transform(sort_array(items), x -> x.mi)"))
         .select(functions.col("taxonkey"), functions.col("mediaType"), functions.col("chunkIndex"), functions.col("mediaInfos"));
 
-    return chunked.join(globalTotals, new String[]{"taxonkey", "mediaType"}, "inner");
+    // Join taxon rank priority and order final rows by priority (highest rank first)
+    Dataset<Row> chunkedWithTotals = chunked.join(globalTotals, new String[]{"taxonkey", "mediaType"}, "inner");
+    Dataset<Row> result = chunkedWithTotals.join(taxonRankMap.select("taxonkey", "taxonRankPriority"), "taxonkey", "left")
+        .orderBy(functions.col("taxonRankPriority").desc());
+
+    return result;
   }
 
   /**
