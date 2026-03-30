@@ -31,11 +31,15 @@ import org.apache.spark.sql.Column;
 import org.gbif.multimedia.meta.ZKMapMetastore;
 
 /**
- * A utility to build an HBase table mapping taxonKey+mediaType to multimedia records.
+ * A utility to build an HBase table mapping checklistKey+taxonKey+mediaType to multimedia records.
  * <p>
- * The table is designed for efficient retrieval of multimedia records by taxonKey and mediaType.
- * The row key is constructed as: "<taxonKey>#<mediaType>#<salt>", where salt is a hash-based
+ * The table is designed for efficient retrieval of multimedia records by checklistKey, taxonKey and mediaType.
+ * The row key is constructed as: salt(checklistKey + taxonKey + mediaType + chunkIndex), where salt is a hash-based
  * value to distribute rows evenly across the cluster.
+ * <p>
+ * The occurrence table's {@code classificationdetails} column (map&lt;string, map&lt;string, string&gt;&gt;) is
+ * exploded so that each checklist entry produces a separate set of HBase rows. The outer map key is
+ * the checklistKey and the inner map's {@code taxonkey} field provides the taxonKey.
  * <p>
  * Each row contains a single column family "media" with a fixed qualifier "mediaInfos" that holds
  * a comma-separated list of multimedia records.
@@ -43,7 +47,7 @@ import org.gbif.multimedia.meta.ZKMapMetastore;
  * Usage:
  * <pre>
  *   java -cp your-jar-with-dependencies.jar org.gbif.multimedia.OccurrenceSpecieMultiMediaTableBuilder \
- *     <sourceCatalog> <hbaseTable> <saltBuckets> <hbase.zookeeper.quorum> <zookeeper.znode.parent>
+ *     &lt;sourceCatalog&gt; &lt;hbaseTable&gt; &lt;saltBuckets&gt; &lt;hbase.zookeeper.quorum&gt; &lt;zookeeper.znode.parent&gt;
  * </pre>
  * Example:
  * <pre>
@@ -98,9 +102,9 @@ public class OccurrenceSpecieMultiMediaTableBuilder {
 
     log.info("Using {} shuffle partitions", partitions);
 
-    //1. Create Dataset with taxonKey, media type and aggregated multimedia identifiers
+    //1. Create Dataset with checklistKey, taxonKey, media type and aggregated multimedia identifiers
     log.info("Creating aggregated Dataset from source catalog: {}", sourceCatalog);
-    spark.sparkContext().setJobGroup("occurrence-query", "Getting the aggregated multimedia identifiers by taxonKey and media type", true);
+    spark.sparkContext().setJobGroup("occurrence-query", "Getting the aggregated multimedia identifiers by checklistKey, taxonKey and media type", true);
     Dataset<Row> aggDf = createSpeciesMediaDataset(spark, sourceCatalog, partitions);
 
     spark.sqlContext().setConf("spark.sql.shuffle.partitions", partitions.toString());
@@ -124,14 +128,15 @@ public class OccurrenceSpecieMultiMediaTableBuilder {
         while (rows.hasNext()) {
 
           Row r = rows.next();
-          String taxonKey = r.getAs("taxonkey");
+          String checklistKey = r.getAs("checklistKey");
+          String classificationTaxonKey = r.getAs("classificationTaxonKey");
           String mediaTypeValue = r.getAs("mediaType");
           String mediaType = mediaTypeValue != null ? mediaTypeValue.toLowerCase(Locale.ROOT) : "";
           Long chunkIndex = r.getAs("chunkIndex");
           List<Row> mediaInfos = r.getList(r.fieldIndex("mediaInfos"));
           long totalMultimediaCount = r.getLong(r.fieldIndex("totalMultimediaCount"));
 
-          byte[] rowKeyBytes = saltedKeyGenerator.computeKey(taxonKey + mediaType + chunkIndex);
+          byte[] rowKeyBytes = saltedKeyGenerator.computeKey(checklistKey + classificationTaxonKey + mediaType + chunkIndex);
 
           // Serialize MediaInfo rows to JSON array string
           List<String> mediaInfoJsons = mediaInfos.stream()
@@ -228,12 +233,16 @@ public class OccurrenceSpecieMultiMediaTableBuilder {
   }
 
   /**
-   * Creates a Dataset<Row> with taxonKey, media type, and aggregated multimedia identifiers.
+   * Creates a Dataset&lt;Row&gt; with checklistKey, taxonKey, media type, and aggregated multimedia identifiers.
+   * <p>
+   * The occurrence table's {@code classificationdetails} column (map&lt;string, map&lt;string, string&gt;&gt;)
+   * is exploded so that each checklist entry produces a separate set of rows. The outer map key is
+   * the checklistKey and the inner map's {@code taxonkey} field provides the taxonKey.
    *
    * @param spark         the SparkSession instance
    * @param sourceCatalog the source catalog name (e.g., "iceberg.prod")
    * @param partitions    the number of partitions for repartitioning
-   * @return a Dataset<Row> with columns: taxonKey, type, identifiers (array of strings)
+   * @return a Dataset&lt;Row&gt; with columns: checklistKey, classificationTaxonKey, mediaType, chunkIndex, mediaInfos, totalMultimediaCount
    */
   private static Dataset<Row> createSpeciesMediaDataset(SparkSession spark, String sourceCatalog, Integer partitions) {
     // honor requested shuffle partitions (if provided) to control parallelism for aggregations
@@ -241,40 +250,34 @@ public class OccurrenceSpecieMultiMediaTableBuilder {
       spark.sqlContext().setConf("spark.sql.shuffle.partitions", partitions.toString());
     }
 
-    // Read occurrence and occurrence_multimedia as separate tables and join explicitly to avoid
-    // nested planner ambiguities. Select and alias columns explicitly so Spark has no ambiguity
-    // about which relation a column belongs to.
-    // Read occurrence table and detect available taxon rank column names safely
+    // Read occurrence table and explode classificationdetails map<string, map<string, string>>
+    // to produce one row per checklist entry per occurrence.
+    // The outer map key becomes checklistKey, the inner map's 'taxonkey' becomes classificationTaxonKey.
     Dataset<Row> occTable = spark.table(sourceCatalog + ".occurrence");
-    List<String> occCols = Arrays.asList(occTable.columns());
-    // Candidate column names in order of preference
-    List<String> rankCandidates = Arrays.asList("taxonrank", "taxonRank", "taxon_rank", "rank");
-    Column taxonRankCol = null;
-    List<Column> found = new ArrayList<>();
-    for (String c : rankCandidates) {
-      if (occCols.contains(c)) {
-        found.add(occTable.col(c));
-      }
-    }
-    if (found.isEmpty()) {
-      taxonRankCol = functions.lit("UNRANKED");
-    } else {
-      Column[] arr = found.toArray(new Column[0]);
-      taxonRankCol = functions.coalesce(arr).alias("taxonRankRaw");
-    }
-    Dataset<Row> occ = occTable.select(occTable.col("gbifid"), occTable.col("taxonkey")).withColumn("taxonRankRaw", taxonRankCol);
+    Dataset<Row> occ = occTable
+        .select(occTable.col("gbifid"), functions.explode(occTable.col("classificationdetails")))
+        .withColumnRenamed("key", "checklistKey")
+        .withColumnRenamed("value", "classificationMap")
+        .withColumn("classificationTaxonKey", functions.col("classificationMap").getItem("taxonkey"))
+        .withColumn("taxonRankRaw", functions.coalesce(
+            functions.col("classificationMap").getItem("taxonrank"),
+            functions.lit("UNRANKED")))
+        .filter(functions.col("classificationTaxonKey").isNotNull())
+        .drop("classificationMap");
+
     Dataset<Row> mm = spark.table(sourceCatalog + ".occurrence_multimedia").select(
         "gbifid", "datasetkey", "identifier", "type", "format", "title", "license", "rightsHolder");
 
     Dataset<Row> df = occ.join(mm, occ.col("gbifid").equalTo(mm.col("gbifid")), "inner")
-        .filter(mm.col("identifier").isNotNull().and(occ.col("taxonkey").isNotNull()))
+        .filter(mm.col("identifier").isNotNull().and(occ.col("classificationTaxonKey").isNotNull()))
         .select(
-                occ.col("taxonkey"),
+            occ.col("checklistKey"),
+            occ.col("classificationTaxonKey"),
             mm.col("datasetkey"),
             functions.coalesce(mm.col("identifier"), functions.lit("")).alias("identifier"),
             functions.coalesce(mm.col("type"), functions.lit("")).alias("mediaType"),
-                // carry taxon rank from occurrence table
-                functions.coalesce(occ.col("taxonRankRaw"), functions.lit("UNRANKED")).alias("taxonRankRaw"),
+            // carry taxon rank from classificationdetails inner map
+            functions.coalesce(occ.col("taxonRankRaw"), functions.lit("UNRANKED")).alias("taxonRankRaw"),
             mm.col("format"),
             mm.col("title"),
             mm.col("gbifid"),
@@ -282,9 +285,9 @@ public class OccurrenceSpecieMultiMediaTableBuilder {
             mm.col("license")
         );
 
-    // Compute total multimedia count per taxon/mediaType (kept for the HBase metadata column)
-    Dataset<Row> globalTotals = df.select("taxonkey", "mediaType", "identifier")
-        .groupBy("taxonkey", "mediaType")
+    // Compute total multimedia count per checklist+taxon/mediaType (kept for the HBase metadata column)
+    Dataset<Row> globalTotals = df.select("checklistKey", "classificationTaxonKey", "mediaType", "identifier")
+        .groupBy("checklistKey", "classificationTaxonKey", "mediaType")
         .agg(functions.count(functions.col("identifier")).alias("totalMultimediaCount"));
 
     // For simplicity and to avoid complex planner joins that can cause ambiguous aggregate
@@ -295,8 +298,8 @@ public class OccurrenceSpecieMultiMediaTableBuilder {
     // Persist joined DF to avoid recomputation and planner ambiguity
     df = df.persist(StorageLevel.MEMORY_AND_DISK());
 
-    // Normalize and compute taxon rank priority per taxonkey
-    Dataset<Row> taxonRankMap = df.select("taxonkey", "taxonRankRaw").distinct()
+    // Normalize and compute taxon rank priority per checklistKey+classificationTaxonKey
+    Dataset<Row> taxonRankMap = df.select("checklistKey", "classificationTaxonKey", "taxonRankRaw").distinct()
         .withColumn("taxonRankNorm", functions.upper(functions.trim(functions.coalesce(functions.col("taxonRankRaw"), functions.lit("UNRANKED")))));
 
     // Map ranks to priorities so that FORM is highest and UNRANKED is lowest
@@ -322,21 +325,19 @@ public class OccurrenceSpecieMultiMediaTableBuilder {
     Dataset<Row> dfWithSeed = df.withColumn("orderSeed", functions.abs(functions.hash(functions.concat(functions.col("datasetkey"), functions.col("gbifid")))));
 
     // Per-dataset sequence number (deterministic pseudo-random via orderSeed) to interleave rows.
-    // Partition by taxonkey + datasetkey (not mediaType) so items from the same dataset are
-    // interleaved across mediaTypes. This avoids mediaType mislabeling (e.g., PDFs marked as StillImage)
-    // causing PDFs to be treated as images in the sequencing logic.
-    WindowSpec perDatasetWindow = Window.partitionBy("taxonkey", "datasetkey").orderBy(functions.col("orderSeed"));
+    // Partition by checklistKey + classificationTaxonKey + datasetkey (not mediaType) so items from
+    // the same dataset are interleaved across mediaTypes.
+    WindowSpec perDatasetWindow = Window.partitionBy("checklistKey", "classificationTaxonKey", "datasetkey").orderBy(functions.col("orderSeed"));
     Dataset<Row> withDatasetSequence = dfWithSeed.withColumn("datasetRowNum", functions.row_number().over(perDatasetWindow));
 
-    // Deterministic dataset ordering per taxon/mediaType using hash(datasetkey)
-    // Deterministic dataset ordering per taxon (not per mediaType). This ensures dataset ordering
+    // Deterministic dataset ordering per checklist+taxon (not per mediaType). This ensures dataset ordering
     // is consistent even when mediaType labels are inconsistent.
-    Dataset<Row> datasetOrder = withDatasetSequence.select("taxonkey", "datasetkey").distinct()
+    Dataset<Row> datasetOrder = withDatasetSequence.select("checklistKey", "classificationTaxonKey", "datasetkey").distinct()
         .withColumn("datasetOrder", functions.row_number().over(
-            Window.partitionBy("taxonkey").orderBy(functions.abs(functions.hash(functions.col("datasetkey"))))
+            Window.partitionBy("checklistKey", "classificationTaxonKey").orderBy(functions.abs(functions.hash(functions.col("datasetkey"))))
         ));
 
-    Dataset<Row> withDatasetOrder = withDatasetSequence.join(datasetOrder, new String[]{"taxonkey", "datasetkey"}, "left");
+    Dataset<Row> withDatasetOrder = withDatasetSequence.join(datasetOrder, new String[]{"checklistKey", "classificationTaxonKey", "datasetkey"}, "left");
 
     // Assign chunkIndex by strict round-robin across datasets, but prioritize image MIME types
     // so non-image formats (pdf, text, etc.) are assigned to later chunks. Within image-first
@@ -380,12 +381,9 @@ public class OccurrenceSpecieMultiMediaTableBuilder {
     );
 
     // Round-robin ordering: prefer higher mediaScore (images), then licensed rows; finally interleave by datasetRowNum/datasetOrder/orderSeed
-    // Round-robin partition by taxonkey and mediaType so chunk assignment is per mediaType.
-    // We rely on improved isPdf/isImage detection to ensure PDFs (even if labeled StillImage)
-    // are not treated as images during chunk assignment.
-    // Partition by taxonkey only so chunk assignment interleaves across mediaTypes and is robust
-    // against mediaType mislabeling (e.g., PDFs labeled as StillImage).
-    WindowSpec roundRobinWindow = Window.partitionBy("taxonkey")
+    // Partition by checklistKey + classificationTaxonKey so chunk assignment interleaves across
+    // mediaTypes and is robust against mediaType mislabeling (e.g., PDFs labeled as StillImage).
+    WindowSpec roundRobinWindow = Window.partitionBy("checklistKey", "classificationTaxonKey")
         .orderBy(
             functions.col("mediaScore").desc(),
             // prefer rows with an explicit format (non-null) so unknown-format rows don't jump ahead of explicit images
@@ -409,7 +407,7 @@ public class OccurrenceSpecieMultiMediaTableBuilder {
     // then prefer rows with an explicit format, then non-pdf, licensed rows, and finally deterministic seed
     Dataset<Row> withWithinDatasetRank = withMediaInfo.withColumn("withinDatasetRank",
         functions.row_number().over(
-            Window.partitionBy("taxonkey", "mediaType", "chunkIndex", "datasetkey").orderBy(
+            Window.partitionBy("checklistKey", "classificationTaxonKey", "mediaType", "chunkIndex", "datasetkey").orderBy(
                 functions.col("isImage").desc(),
                 functions.expr("format IS NULL").asc(),
                 functions.col("isPdf").asc(),
@@ -419,10 +417,9 @@ public class OccurrenceSpecieMultiMediaTableBuilder {
         )
     );
 
-    // Aggregate per chunk: collect tuples (r,d,rnd,mi), sort them and extract mediaInfo structs in order
     // Aggregate per chunk: collect tuples that include a negated mediaScore so sort_array will
     // place higher-scored media (images) first and PDFs (with very low scores) last.
-    Dataset<Row> chunked = withWithinDatasetRank.groupBy("taxonkey", "mediaType", "chunkIndex")
+    Dataset<Row> chunked = withWithinDatasetRank.groupBy("checklistKey", "classificationTaxonKey", "mediaType", "chunkIndex")
         .agg(functions.collect_list(functions.struct(
             // Negate mediaScore so that sort_array ascending sorts images (high score -> large negative) first
             functions.expr("-mediaScore").alias("scoreNeg"),
@@ -432,11 +429,13 @@ public class OccurrenceSpecieMultiMediaTableBuilder {
             functions.col("mediaInfoStruct").alias("mi")
         )).alias("items"))
         .withColumn("mediaInfos", functions.expr("transform(sort_array(items), x -> x.mi)"))
-        .select(functions.col("taxonkey"), functions.col("mediaType"), functions.col("chunkIndex"), functions.col("mediaInfos"));
+        .select(functions.col("checklistKey"), functions.col("classificationTaxonKey"), functions.col("mediaType"), functions.col("chunkIndex"), functions.col("mediaInfos"));
 
     // Join taxon rank priority and order final rows by priority (highest rank first)
-    Dataset<Row> chunkedWithTotals = chunked.join(globalTotals, new String[]{"taxonkey", "mediaType"}, "inner");
-    Dataset<Row> result = chunkedWithTotals.join(taxonRankMap.select("taxonkey", "taxonRankPriority"), "taxonkey", "left")
+    Dataset<Row> chunkedWithTotals = chunked.join(globalTotals, new String[]{"checklistKey", "classificationTaxonKey", "mediaType"}, "inner");
+    Dataset<Row> result = chunkedWithTotals.join(
+            taxonRankMap.select("checklistKey", "classificationTaxonKey", "taxonRankPriority"),
+            new String[]{"checklistKey", "classificationTaxonKey"}, "left")
         .orderBy(functions.col("taxonRankPriority").desc());
 
     return result;
