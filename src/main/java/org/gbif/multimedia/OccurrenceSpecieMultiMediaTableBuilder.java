@@ -2,9 +2,7 @@ package org.gbif.multimedia;
 
 
 import java.io.IOException;
-import java.nio.charset.StandardCharsets;
 import java.util.*;
-import java.util.stream.Collectors;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.SneakyThrows;
@@ -123,52 +121,29 @@ public class OccurrenceSpecieMultiMediaTableBuilder {
       try (Connection conn = createHBaseConnection(zkQuorum, znodeParent);
            BufferedMutator mutator = conn.getBufferedMutator(params)) {
 
-        List<Put> batch = new ArrayList<>(BATCH_PUT_SIZE);
-        SaltedKeyGenerator saltedKeyGenerator = new SaltedKeyGenerator(saltBuckets);
-        while (rows.hasNext()) {
+          SaltedKeyGenerator saltedKeyGenerator = new SaltedKeyGenerator(saltBuckets);
+          while (rows.hasNext()) {
 
-          Row r = rows.next();
-          String checklistKey = r.getAs("checklistKey");
-          String classificationTaxonKey = r.getAs("classificationTaxonKey");
-          String mediaTypeValue = r.getAs("mediaType");
-          String mediaType = mediaTypeValue != null ? mediaTypeValue.toLowerCase(Locale.ROOT) : "";
-          Long chunkIndex = r.getAs("chunkIndex");
-          List<Row> mediaInfos = r.getList(r.fieldIndex("mediaInfos"));
-          long totalMultimediaCount = r.getLong(r.fieldIndex("totalMultimediaCount"));
+            Row r = rows.next();
+            String checklistKey = r.getAs("checklistKey");
+            String classificationTaxonKey = r.getAs("classificationTaxonKey");
+            String mediaTypeValue = r.getAs("mediaType");
+            String mediaType = mediaTypeValue != null ? mediaTypeValue.toLowerCase(Locale.ROOT) : "";
+            Long chunkIndex = r.getAs("chunkIndex");
+            List<Row> mediaInfos = r.getList(r.fieldIndex("mediaInfos"));
+            long totalMultimediaCount = r.getLong(r.fieldIndex("totalMultimediaCount"));
 
-          byte[] rowKeyBytes = saltedKeyGenerator.computeKey(checklistKey + classificationTaxonKey + mediaType + chunkIndex);
+            byte[] rowKeyBytes = saltedKeyGenerator.computeKey(checklistKey + classificationTaxonKey + mediaType + chunkIndex);
 
-          // Serialize MediaInfo rows to JSON array string
-          List<String> mediaInfoJsons = mediaInfos.stream()
-              .map(OccurrenceSpecieMultiMediaTableBuilder::rowToJsonMediaInfo)
-              .collect(Collectors.toList());
-
-          String mediaInfosStr = "[" + String.join(",", mediaInfoJsons) + "]";
-          byte[] value = mediaInfosStr.getBytes(StandardCharsets.UTF_8);
-          Put put = new Put(rowKeyBytes);
-          put.addColumn(COLUMN_FAMILY, MEDIA_INFOS_QUALIFIER, value);
-          put.addColumn(COLUMN_FAMILY, MULTIMEDIA_COUNT_QUALIFIER, Bytes.toBytes(mediaInfoJsons.size()));
-          put.addColumn(COLUMN_FAMILY, TOTAL_MULTIMEDIA_COUNT_QUALIFIER, Bytes.toBytes(totalMultimediaCount));
-          batch.add(put);
-
-        if (batch.size() >= BATCH_PUT_SIZE) {
-          // submit batch
-          for (Put p : batch) {
-            mutator.mutate(p);
-          }
+            // Serialize MediaInfo rows to Avro
+            byte[] value =MediaInfosAvroSerializer.serializeMediaInfosAvro(mediaInfos);
+            Put put = new Put(rowKeyBytes);
+            put.addColumn(COLUMN_FAMILY, MEDIA_INFOS_QUALIFIER, value);
+            put.addColumn(COLUMN_FAMILY, MULTIMEDIA_COUNT_QUALIFIER, Bytes.toBytes(mediaInfos.size()));
+            put.addColumn(COLUMN_FAMILY, TOTAL_MULTIMEDIA_COUNT_QUALIFIER, Bytes.toBytes(totalMultimediaCount));
+            mutator.mutate(put);
+         }
           mutator.flush();
-          batch.clear();
-        }
-      }
-
-      // flush remaining
-      if (!batch.isEmpty()) {
-        for (Put p: batch) {
-          mutator.mutate(p);
-        }
-        mutator.flush();
-        batch.clear();
-      }
       }
     });
     log.info("HBase table {} population completed.", hbaseTable);
