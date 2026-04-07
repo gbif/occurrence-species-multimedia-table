@@ -2,6 +2,8 @@ package org.gbif.multimedia;
 
 
 import java.io.IOException;
+import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
 import java.util.*;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -45,12 +47,18 @@ import org.gbif.multimedia.meta.ZKMapMetastore;
  * Usage:
  * <pre>
  *   java -cp your-jar-with-dependencies.jar org.gbif.multimedia.OccurrenceSpecieMultiMediaTableBuilder \
- *     &lt;sourceCatalog&gt; &lt;hbaseTable&gt; &lt;saltBuckets&gt; &lt;hbase.zookeeper.quorum&gt; &lt;zookeeper.znode.parent&gt;
+ *     &lt;configFile&gt; [timestamp]
  * </pre>
+ * The {@code configFile} argument is the path to the YAML configuration file containing
+ * sourceCatalog, HBase connection, salt buckets, metastore path, offline URL patterns, etc.
+ * <p>
+ * The optional {@code timestamp} argument (format {@code yyyyMMdd_HHmm}) is appended to the
+ * HBase table name. If omitted, the current date/time is used.
+ * <p>
  * Example:
  * <pre>
  *   java -cp your-jar-with-dependencies.jar org.gbif.multimedia.OccurrenceSpecieMultiMediaTableBuilder \
- *     iceberg.prod occurrence_species_multimedia 64 zk1,zk2,zk3 /hbase
+ *     /etc/multimedia/application.yaml 20260407_1200
  * </pre>
  */
 @Slf4j
@@ -73,18 +81,25 @@ public class OccurrenceSpecieMultiMediaTableBuilder {
 
 
   public static void main(String[] args) throws Exception {
-    if (args.length < 7) {
-      System.err.println("Usage: OccurrenceSpecieMultiMediaTableBuilder <sourceCatalog> <hbaseTable> <saltBuckets> <hbase.zookeeper.quorum> <zookeeper.znode.parent> <zkMetastorePath> <timestamp>");
+    if (args.length < 1) {
+      System.err.println("Usage: OccurrenceSpecieMultiMediaTableBuilder <configFile> [timestamp]");
       System.exit(1);
     }
 
-    final String sourceCatalog = args[0];              // e.g. "iceberg.prod"
-    final String baseHbaseTable = args[1];                 // e.g. "occurrence_media"
-    final int saltBuckets = Integer.parseInt(args[2]); // e.g. 64
-    final String zkQuorum = args[3];                   // e.g. "zk1,zk2,zk3"
-    final String znodeParent = args[4];                // e.g. "/znode-93f9cdb5-d146-46da-9f80-e8546468b0fe/hbase"
-    final String zkMetastorePath = args[5];          // e.g. "/dev/meta/occurrence_species_multimedia_table"
-    final String timestamp = args[6];                  // expected format "YYYYMMDD_HHMM"
+    final String configFile = args[0];
+
+    final String timestamp = args.length >= 2
+        ? args[1]
+        : LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMdd_HHmm"));
+
+    // Load all settings from the provided YAML configuration file
+    final AppConfig.Config config = AppConfig.loadFromFile(configFile);
+    final String sourceCatalog = config.getSourceCatalog();
+    final String baseHbaseTable = config.getHbase().getTable();
+    final int saltBuckets = config.getHbase().getSaltBuckets();
+    final String zkQuorum = config.getHbase().getZookeeperQuorum();
+    final String znodeParent = config.getHbase().getZnodeParent();
+    final String zkMetastorePath = config.getZkMetastorePath();
 
     final String hbaseTable = baseHbaseTable + "_" + timestamp;
 
@@ -103,7 +118,7 @@ public class OccurrenceSpecieMultiMediaTableBuilder {
     //1. Create Dataset with checklistKey, taxonKey, media type and aggregated multimedia identifiers
     log.info("Creating aggregated Dataset from source catalog: {}", sourceCatalog);
     spark.sparkContext().setJobGroup("occurrence-query", "Getting the aggregated multimedia identifiers by checklistKey, taxonKey and media type", true);
-    Dataset<Row> aggDf = createSpeciesMediaDataset(spark, sourceCatalog, partitions);
+    Dataset<Row> aggDf = createSpeciesMediaDataset(spark, sourceCatalog, partitions, config);
 
     spark.sqlContext().setConf("spark.sql.shuffle.partitions", partitions.toString());
 
@@ -217,9 +232,10 @@ public class OccurrenceSpecieMultiMediaTableBuilder {
    * @param spark         the SparkSession instance
    * @param sourceCatalog the source catalog name (e.g., "iceberg.prod")
    * @param partitions    the number of partitions for repartitioning
+   * @param config        the application configuration
    * @return a Dataset&lt;Row&gt; with columns: checklistKey, classificationTaxonKey, mediaType, chunkIndex, mediaInfos, totalMultimediaCount
    */
-  private static Dataset<Row> createSpeciesMediaDataset(SparkSession spark, String sourceCatalog, Integer partitions) {
+  private static Dataset<Row> createSpeciesMediaDataset(SparkSession spark, String sourceCatalog, Integer partitions, AppConfig.Config config) {
     // honor requested shuffle partitions (if provided) to control parallelism for aggregations
     if (partitions != null) {
       spark.sqlContext().setConf("spark.sql.shuffle.partitions", partitions.toString());
@@ -329,6 +345,9 @@ public class OccurrenceSpecieMultiMediaTableBuilder {
         .or(idCol.rlike("(?i)\\.pdf(\\?.*)?$") )
         .or(titleCol.rlike("(?i)\\.pdf(\\?.*)?$") );
 
+    // isOffline: true for URLs matching known offline/inaccessible hosts (loaded from YAML config)
+    Column isOfflineExpr = AppConfig.buildIsOfflineColumn(idCol, config);
+
     // isImage: true for recognized image MIME types or URLs/filenames with common image extensions
     // Expand detection to cover variants like 'jpeg', 'jpg', 'format/jpg', and plain 'image'.
     Column isImageRaw = formatCol.rlike("(?i)^(?:\\s*image/)")
@@ -339,11 +358,14 @@ public class OccurrenceSpecieMultiMediaTableBuilder {
         .or(idCol.rlike("(?i)\\.(jpg|jpeg|png|gif|tif|tiff|bmp|webp)(\\?.*)?$$"))
         .or(titleCol.rlike("(?i)\\.(jpg|jpeg|png|gif|tif|tiff|bmp|webp)(\\?.*)?$$"));
 
-    // Exclude any rows that match PDF patterns from being considered images (handles 'image/pdf').
-    Column isImageExpr = isImageRaw.and(functions.not(isPdfExpr));
+    // Exclude any rows that match PDF or offline patterns from being considered images.
+    Column isImageExpr = isImageRaw.and(functions.not(isPdfExpr)).and(functions.not(isOfflineExpr));
 
     // Materialize the flags as columns so they can be referenced consistently in multiple windows
-    Dataset<Row> withDatasetFlags = withDatasetOrder.withColumn("isImage", isImageExpr).withColumn("isPdf", isPdfExpr);
+    Dataset<Row> withDatasetFlags = withDatasetOrder
+        .withColumn("isImage", isImageExpr)
+        .withColumn("isPdf", isPdfExpr)
+        .withColumn("isOffline", isOfflineExpr);
 
     // Create a numeric score to enforce global preference: images highest, neutral middle, pdf lowest.
     // This makes the ordering robust against datasetRowNum interleaving.
@@ -351,7 +373,7 @@ public class OccurrenceSpecieMultiMediaTableBuilder {
         // Strongly prefer images over others to avoid PDFs appearing before images.
         // Demote PDFs to a very low score so they are always ordered after images and other media.
         functions.when(functions.col("isImage"), functions.lit(100))
-                 .when(functions.col("isPdf"), functions.lit(-1000))
+                 .when(functions.col("isPdf").or(functions.col("isOffline")), functions.lit(-1000))
                  .otherwise(functions.lit(10))
     );
 
@@ -365,6 +387,8 @@ public class OccurrenceSpecieMultiMediaTableBuilder {
             functions.expr("format IS NULL").asc(),
             // prefer non-pdf rows to further demote PDFs even if other factors are similar
             functions.col("isPdf").asc(),
+            // demote offline URLs
+            functions.col("isOffline").asc(),
             functions.expr("license IS NULL").asc(),
             functions.col("datasetRowNum"),
             functions.col("datasetOrder"),
@@ -386,6 +410,7 @@ public class OccurrenceSpecieMultiMediaTableBuilder {
                 functions.col("isImage").desc(),
                 functions.expr("format IS NULL").asc(),
                 functions.col("isPdf").asc(),
+                functions.col("isOffline").asc(),
                 functions.expr("license IS NULL").asc(),
                 functions.col("orderSeed")
             )

@@ -1,0 +1,27 @@
+# Configuration for the Occurrence Species Multimedia Table Builder.
+# All settings except the runtime timestamp are defined here.
+
+# Source catalog for Iceberg tables (e.g. "iceberg.prod", "iceberg.test")
+sourceCatalog: "iceberg.dev"
+
+# HBase configuration
+hbase:
+  # Base table name; the runtime timestamp will be appended as <table>_<timestamp>
+  table: "dev_occurrence_species_multimedia"
+  # Number of salt buckets (pre-split regions) for the HBase table
+  saltBuckets: 30
+  # Zookeeper quorum (comma-separated hostnames)
+  zookeeperQuorum: "zk1,zk2,zk3"
+  # Zookeeper znode parent path for HBase
+  znodeParent: "/hbase"
+
+# Zookeeper path used by the metastore to track the current active table
+zkMetastorePath: "/dev/meta/occurrence_species_multimedia_table"
+
+# Regex patterns for identifier URLs of known offline/inaccessible media.
+# Each pattern is matched (case-insensitively) against the lowercased identifier column
+# using Spark's rlike(). Use Java/Spark regex syntax.
+# Add new patterns as needed without code changes.
+offlineUrlPatterns:
+  - "^https?://multimedia\\.agouti\\.eu/assets/"
+
