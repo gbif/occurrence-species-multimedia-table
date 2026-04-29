@@ -50,6 +50,8 @@ public class AppConfig {
     private String zkMetastorePath;
     /** Regex patterns for identifier URLs of known offline/inaccessible media. */
     private List<String> offlineUrlPatterns = Collections.emptyList();
+    /** Dataset keys that should be prioritized first, in exact configured order. */
+    private List<String> datasetKeyPriorityOrder = Collections.emptyList();
   }
 
   /**
@@ -75,12 +77,13 @@ public class AppConfig {
         throw new RuntimeException("Configuration resource '" + resource + "' not found on classpath");
       }
       Config config = YAML_MAPPER.readValue(is, Config.class);
-      log.info("Loaded configuration from '{}': sourceCatalog={}, hbase.table={}, saltBuckets={}, offlineUrlPatterns={}",
+      log.info("Loaded configuration from '{}': sourceCatalog={}, hbase.table={}, saltBuckets={}, offlineUrlPatterns={}, datasetKeyPriorityOrder={}",
           resource,
           config.getSourceCatalog(),
           config.getHbase().getTable(),
           config.getHbase().getSaltBuckets(),
-          config.getOfflineUrlPatterns().size());
+          config.getOfflineUrlPatterns().size(),
+          config.getDatasetKeyPriorityOrder().size());
       return config;
     } catch (IOException e) {
       throw new RuntimeException("Failed to load configuration from '" + resource + "'", e);
@@ -101,12 +104,13 @@ public class AppConfig {
     }
     try {
       Config config = YAML_MAPPER.readValue(file, Config.class);
-      log.info("Loaded configuration from '{}': sourceCatalog={}, hbase.table={}, saltBuckets={}, offlineUrlPatterns={}",
+      log.info("Loaded configuration from '{}': sourceCatalog={}, hbase.table={}, saltBuckets={}, offlineUrlPatterns={}, datasetKeyPriorityOrder={}",
           filePath,
           config.getSourceCatalog(),
           config.getHbase().getTable(),
           config.getHbase().getSaltBuckets(),
-          config.getOfflineUrlPatterns().size());
+          config.getOfflineUrlPatterns().size(),
+          config.getDatasetKeyPriorityOrder().size());
       return config;
     } catch (IOException e) {
       throw new RuntimeException("Failed to load configuration from '" + filePath + "'", e);

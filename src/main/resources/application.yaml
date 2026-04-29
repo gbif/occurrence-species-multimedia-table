@@ -25,3 +25,8 @@ zkMetastorePath: "/dev/meta/occurrence_species_multimedia_table"
 offlineUrlPatterns:
   - "^https?://multimedia\\.agouti\\.eu/assets/"
 
+# Dataset keys that should be prioritized first in results.
+# Order matters: the first key here gets highest priority, then the second, etc.
+datasetKeyPriorityOrder:
+  # - "7ddf754f-d193-4cc9-b351-99906754a03b"
+  # - "8a863029-f435-446a-821e-275f4f641165"
