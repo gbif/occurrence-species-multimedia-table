@@ -71,6 +71,7 @@ public class OccurrenceSpecieMultiMediaTableBuilder {
   private static final byte[] TOTAL_MULTIMEDIA_COUNT_QUALIFIER = Bytes.toBytes("total_multimedia_count");
   // CF
   private static final int BATCH_PUT_SIZE = 1000;      // tune per cluster
+  private static final long HBASE_MUTATOR_WRITE_BUFFER_BYTES = 16L * 1024L * 1024L;
 
   private static final int MAX_MEDIAINFOS_PER_CELL = 300;
 
@@ -123,7 +124,13 @@ public class OccurrenceSpecieMultiMediaTableBuilder {
     spark.sqlContext().setConf("spark.sql.shuffle.partitions", partitions.toString());
 
     //2. Convert to JavaRDD<Row> and write per partition to HBase
-    JavaRDD<Row> rdd = aggDf.javaRDD();
+    Dataset<Row> writeDf = aggDf.repartition(
+        Math.max(1, partitions),
+        functions.col("checklistKey"),
+        functions.col("classificationTaxonKey"),
+        functions.col("mediaType")
+    );
+    JavaRDD<Row> rdd = writeDf.javaRDD();
     spark.sparkContext().clearJobGroup();
 
     //3. Write to HBase per partition
@@ -132,7 +139,7 @@ public class OccurrenceSpecieMultiMediaTableBuilder {
 
     rdd.foreachPartition((VoidFunction<Iterator<Row>>) rows -> {
       BufferedMutatorParams params = new BufferedMutatorParams(TableName.valueOf(hbaseTable));
-      //params.writeBufferSize(4 * 1024 * 1024); // 4MB if needed, default is 2MB
+      params.writeBufferSize(HBASE_MUTATOR_WRITE_BUFFER_BYTES);
       try (Connection conn = createHBaseConnection(zkQuorum, znodeParent);
            BufferedMutator mutator = conn.getBufferedMutator(params)) {
 
@@ -288,6 +295,7 @@ public class OccurrenceSpecieMultiMediaTableBuilder {
     // Use `df` directly for downstream processing.
 
     // Persist joined DF to avoid recomputation and planner ambiguity
+    // Use MEMORY_AND_DISK for better shuffle stability (avoids PVC exhaustion on DISK_ONLY)
     df = df.persist(StorageLevel.MEMORY_AND_DISK());
 
     // Add a deterministic per-row seed for ordering (stable across runs) based on datasetkey+gbifid
