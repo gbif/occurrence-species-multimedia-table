@@ -75,6 +75,13 @@ public class OccurrenceSpecieMultiMediaTableBuilder {
 
   private static final int MAX_MEDIAINFOS_PER_CELL = 300;
 
+  // Caps rows considered per dataset within a single checklistKey+classificationTaxonKey+mediaType
+  // group before the round-robin chunking window. Broad ancestor taxa (e.g. Kingdom/Phylum) appear
+  // in the classification hierarchy of huge numbers of occurrences, so without this cap the
+  // round-robin window partition can grow to millions of rows and OOM the executor sorting it.
+  // Package-private (rather than private) so it's directly referenceable from tests.
+  static final int MAX_ROWS_PER_DATASET_PER_GROUP = 2000;
+
   private static final int DEFAULT_PARTITIONS = 600;
 
   private static final ObjectMapper MAPPER = new ObjectMapper();
@@ -244,7 +251,8 @@ public class OccurrenceSpecieMultiMediaTableBuilder {
    * @param config        the application configuration
    * @return a Dataset&lt;Row&gt; with columns: checklistKey, classificationTaxonKey, mediaType, chunkIndex, mediaInfos, totalMultimediaCount
    */
-  private static Dataset<Row> createSpeciesMediaDataset(SparkSession spark, String sourceCatalog, Integer partitions, AppConfig.Config config) {
+  // Package-private (rather than private) so it's directly referenceable from tests.
+  static Dataset<Row> createSpeciesMediaDataset(SparkSession spark, String sourceCatalog, Integer partitions, AppConfig.Config config) {
     // honor requested shuffle partitions (if provided) to control parallelism for aggregations
     if (partitions != null) {
       spark.sqlContext().setConf("spark.sql.shuffle.partitions", partitions.toString());
@@ -304,6 +312,12 @@ public class OccurrenceSpecieMultiMediaTableBuilder {
     // Per-dataset sequence number (deterministic pseudo-random via orderSeed) to interleave rows.
     WindowSpec perDatasetWindow = Window.partitionBy("checklistKey", "classificationTaxonKey", "mediaType", "datasetkey").orderBy(functions.col("orderSeed"));
     Dataset<Row> withDatasetSequence = dfWithSeed.withColumn("datasetRowNum", functions.row_number().over(perDatasetWindow));
+
+    // Cap rows per dataset within each checklistKey+classificationTaxonKey+mediaType group before
+    // the round-robin window below. This bounds that window's partition size to roughly
+    // (numDatasets * MAX_ROWS_PER_DATASET_PER_GROUP) instead of the full (possibly skewed) row
+    // count, since only MAX_MEDIAINFOS_PER_CELL rows per chunk are ever retained downstream anyway.
+    withDatasetSequence = withDatasetSequence.filter(functions.col("datasetRowNum").leq(MAX_ROWS_PER_DATASET_PER_GROUP));
 
     // Apply configured dataset key priority (lower rank = earlier in result order).
     // Matching is done on lowercased dataset keys.
