@@ -26,7 +26,6 @@ import org.apache.spark.sql.SparkSession;
 import org.apache.spark.sql.expressions.Window;
 import org.apache.spark.sql.expressions.WindowSpec;
 import org.apache.spark.sql.functions;
-import org.apache.spark.storage.StorageLevel;
 import org.apache.spark.sql.Column;
 import org.gbif.multimedia.meta.ZKMapMetastore;
 
@@ -66,7 +65,9 @@ public class OccurrenceSpecieMultiMediaTableBuilder {
 
   // Column family & qualifier conventions
   private static final byte[] COLUMN_FAMILY = Bytes.toBytes("media"); // HBase
-  private static final byte[] MEDIA_INFOS_QUALIFIER = Bytes.toBytes("media_infos");
+  // Readers decode with a fixed schema (raw Avro binary, no embedded writer schema), so every
+  // MediaInfo schema change needs a new qualifier. v2 adds datasetKey; "media_infos" holds v1.
+  private static final byte[] MEDIA_INFOS_QUALIFIER = Bytes.toBytes("media_infos_v2");
   private static final byte[] MULTIMEDIA_COUNT_QUALIFIER = Bytes.toBytes("multimedia_count");
   private static final byte[] TOTAL_MULTIMEDIA_COUNT_QUALIFIER = Bytes.toBytes("total_multimedia_count");
   // CF
@@ -258,39 +259,42 @@ public class OccurrenceSpecieMultiMediaTableBuilder {
       spark.sqlContext().setConf("spark.sql.shuffle.partitions", partitions.toString());
     }
 
-    // Read occurrence table and use the classifications column (map<string, array<string>>).
-    // The outer map key is the checklistKey, the value is an array of all taxon keys in the
-    // classification hierarchy. Exploding both levels produces one row per (checklistKey, taxonKey)
-    // so that querying for a higher-level taxon key also returns media from its descendants.
+    // Let Spark turn the per-dataset row_number cap below into a map-side WindowGroupLimit (top-N per
+    // group before the shuffle). The optimizer only does this when the limit is <= this threshold
+    // (default 1000); without it a skewed group (e.g. iNaturalist under Animalia) is shuffled and
+    // sorted in full by a single task.
+    spark.sqlContext().setConf("spark.sql.optimizer.windowGroupLimitThreshold",
+        String.valueOf(MAX_ROWS_PER_DATASET_PER_GROUP));
+
+    Dataset<Row> mm = spark.table(sourceCatalog + ".occurrence_multimedia")
+        .filter(functions.col("identifier").isNotNull())
+        .select("gbifid", "datasetkey", "identifier", "type", "format", "title", "license", "rightsHolder");
+
+    // Join on the un-exploded classifications column (map<string, array<string>>) first, so only
+    // occurrences that actually have media are exploded. The outer map key is the checklistKey, the
+    // value is an array of all taxon keys in the classification hierarchy. Exploding both levels
+    // produces one row per (checklistKey, taxonKey) so that querying for a higher-level taxon key
+    // also returns media from its descendants.
     Dataset<Row> occTable = spark.table(sourceCatalog + ".occurrence");
-    Dataset<Row> occ = occTable
-        .select(occTable.col("gbifid"), functions.explode(occTable.col("classifications")))
-        .withColumnRenamed("key", "checklistKey")
-        .withColumnRenamed("value", "taxonKeys")
-        // Explode the array of taxon keys — each key in the hierarchy gets its own row
-        .withColumn("classificationTaxonKey", functions.explode(functions.col("taxonKeys")))
-        .filter(functions.col("classificationTaxonKey").isNotNull()
-            .and(functions.col("classificationTaxonKey").notEqual(functions.lit(""))))
-        .drop("taxonKeys");
+    Dataset<Row> occ = occTable.select(occTable.col("gbifid"), occTable.col("classifications"));
 
-
-    Dataset<Row> mm = spark.table(sourceCatalog + ".occurrence_multimedia").select(
-        "gbifid", "datasetkey", "identifier", "type", "format", "title", "license", "rightsHolder");
-
-    Dataset<Row> df = occ.join(mm, occ.col("gbifid").equalTo(mm.col("gbifid")), "inner")
-        .filter(mm.col("identifier").isNotNull().and(occ.col("classificationTaxonKey").isNotNull()))
+    Dataset<Row> df = mm.join(occ, mm.col("gbifid").equalTo(occ.col("gbifid")), "inner")
         .select(
-            occ.col("checklistKey"),
-            occ.col("classificationTaxonKey"),
             mm.col("datasetkey"),
-            functions.coalesce(mm.col("identifier"), functions.lit("")).alias("identifier"),
+            mm.col("identifier"),
             functions.coalesce(mm.col("type"), functions.lit("")).alias("mediaType"),
             mm.col("format"),
             mm.col("title"),
             mm.col("gbifid"),
             mm.col("rightsHolder").alias("rightsholder"),
-            mm.col("license")
-        );
+            mm.col("license"),
+            functions.explode(occ.col("classifications")).as(new String[]{"checklistKey", "taxonKeys"})
+        )
+        // Explode the array of taxon keys — each key in the hierarchy gets its own row
+        .withColumn("classificationTaxonKey", functions.explode(functions.col("taxonKeys")))
+        .filter(functions.col("classificationTaxonKey").isNotNull()
+            .and(functions.col("classificationTaxonKey").notEqual(functions.lit(""))))
+        .drop("taxonKeys");
 
     // Compute total multimedia count per checklist+taxon/mediaType (kept for the HBase metadata column)
     Dataset<Row> globalTotals = df.select("checklistKey", "classificationTaxonKey", "mediaType", "identifier")
@@ -301,10 +305,6 @@ public class OccurrenceSpecieMultiMediaTableBuilder {
     // resolution, we do not compute per-format counts here. The intra-chunk ordering will
     // rely on per-row attributes (format null, image-like, license null) and a random tie-breaker.
     // Use `df` directly for downstream processing.
-
-    // Persist joined DF to avoid recomputation and planner ambiguity
-    // Use MEMORY_AND_DISK for better shuffle stability (avoids PVC exhaustion on DISK_ONLY)
-    df = df.persist(StorageLevel.MEMORY_AND_DISK());
 
     // Add a deterministic per-row seed for ordering (stable across runs) based on datasetkey+gbifid
     Dataset<Row> dfWithSeed = df.withColumn("orderSeed", functions.abs(functions.hash(functions.concat(functions.col("datasetkey"), functions.col("gbifid")))));
@@ -394,7 +394,7 @@ public class OccurrenceSpecieMultiMediaTableBuilder {
 
     // Build mediaInfo struct
     Dataset<Row> withMediaInfo = withChunkIndex.withColumn("mediaInfoStruct",
-        functions.struct(functions.col("identifier"), functions.col("title"), functions.col("gbifid"), functions.col("rightsholder"), functions.col("license")));
+        functions.struct(functions.col("identifier"), functions.col("title"), functions.col("gbifid"), functions.col("rightsholder"), functions.col("license"), functions.col("datasetkey")));
 
     // Aggregate per chunk with sort_array for final ordering within each chunk
     Dataset<Row> chunked = withMediaInfo.groupBy("checklistKey", "classificationTaxonKey", "mediaType", "chunkIndex")
@@ -408,9 +408,6 @@ public class OccurrenceSpecieMultiMediaTableBuilder {
         )).alias("items"))
         .withColumn("mediaInfos", functions.expr("transform(sort_array(items), x -> x.mi)"))
         .select(functions.col("checklistKey"), functions.col("classificationTaxonKey"), functions.col("mediaType"), functions.col("chunkIndex"), functions.col("mediaInfos"));
-
-    // Unpersist the large joined DF now that aggregation is complete
-    df.unpersist();
 
     // Join total counts
     Dataset<Row> result = chunked.join(globalTotals, new String[]{"checklistKey", "classificationTaxonKey", "mediaType"}, "inner");

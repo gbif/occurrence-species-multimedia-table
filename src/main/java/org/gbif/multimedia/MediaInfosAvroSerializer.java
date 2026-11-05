@@ -25,7 +25,8 @@ public class MediaInfosAvroSerializer {
         {"name": "title",        "type": ["null", "string"], "default": null},
         {"name": "occurrenceKey","type": ["null", "string"], "default": null},
         {"name": "rightsHolder", "type": ["null", "string"], "default": null},
-        {"name": "license",      "type": ["null", "string"], "default": null}
+        {"name": "license",      "type": ["null", "string"], "default": null},
+        {"name": "datasetKey",   "type": ["null", "string"], "default": null}
       ]
     }
     """;
@@ -34,7 +35,8 @@ public class MediaInfosAvroSerializer {
       "{\"type\": \"array\", \"items\": " + MEDIA_INFO_SCHEMA_JSON + "}";
 
   private static final Schema MEDIA_INFO_SCHEMA = new Schema.Parser().parse(MEDIA_INFO_SCHEMA_JSON);
-  private static final Schema MEDIA_INFO_ARRAY_SCHEMA = new Schema.Parser().parse(MEDIA_INFO_ARRAY_SCHEMA_JSON);
+  // Package-private (rather than private) so it's directly referenceable from tests.
+  static final Schema MEDIA_INFO_ARRAY_SCHEMA = new Schema.Parser().parse(MEDIA_INFO_ARRAY_SCHEMA_JSON);
 
   // Writer — reuse encoder across calls within a partition
   public static byte[] serializeMediaInfosAvro(List<Row> mediaInfos) throws IOException {
@@ -48,6 +50,7 @@ public class MediaInfosAvroSerializer {
       rec.put("occurrenceKey", row.getAs("gbifid") != null ? row.getAs("gbifid").toString() : null);
       rec.put("rightsHolder", row.getAs("rightsholder"));
       rec.put("license",      row.getAs("license"));
+      rec.put("datasetKey",   row.getAs("datasetkey"));
       array.add(rec);
     }
 
