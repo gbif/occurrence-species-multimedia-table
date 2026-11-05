@@ -27,6 +27,7 @@ import org.apache.spark.sql.expressions.Window;
 import org.apache.spark.sql.expressions.WindowSpec;
 import org.apache.spark.sql.functions;
 import org.apache.spark.sql.Column;
+import org.apache.spark.util.LongAccumulator;
 import org.gbif.multimedia.meta.ZKMapMetastore;
 
 /**
@@ -145,6 +146,7 @@ public class OccurrenceSpecieMultiMediaTableBuilder {
     log.info("Writing to HBase table: {}", hbaseTable);
     spark.sparkContext().setJobGroup("hbase-write", "Writing the aggregated multimedia identifiers to HBase table " + hbaseTable, true);
 
+    LongAccumulator rowsWritten = spark.sparkContext().longAccumulator("rowsWritten");
     rdd.foreachPartition((VoidFunction<Iterator<Row>>) rows -> {
       BufferedMutatorParams params = new BufferedMutatorParams(TableName.valueOf(hbaseTable));
       params.writeBufferSize(HBASE_MUTATOR_WRITE_BUFFER_BYTES);
@@ -172,14 +174,23 @@ public class OccurrenceSpecieMultiMediaTableBuilder {
             put.addColumn(COLUMN_FAMILY, MULTIMEDIA_COUNT_QUALIFIER, Bytes.toBytes(mediaInfos.size()));
             put.addColumn(COLUMN_FAMILY, TOTAL_MULTIMEDIA_COUNT_QUALIFIER, Bytes.toBytes(totalMultimediaCount));
             mutator.mutate(put);
+            rowsWritten.add(1);
          }
           mutator.flush();
       }
     });
-    log.info("HBase table {} population completed.", hbaseTable);
+    log.info("HBase table {} population completed, {} rows written.", hbaseTable, rowsWritten.value());
     spark.sparkContext().clearJobGroup();
 
     spark.stop();
+
+    // Never point the metastore at (and delete the previous table for) an empty build, e.g. when the
+    // source catalog tables are empty or don't join.
+    if (rowsWritten.value() == 0) {
+      deleteHBaseTable(hbaseTable, zkQuorum, znodeParent);
+      throw new IllegalStateException("No rows written to " + hbaseTable + " from catalog " + sourceCatalog
+          + "; dropped it and left metastore " + zkMetastorePath + " unchanged");
+    }
     updateMeta(zkQuorum, RETRY_INTERVAL_MS, zkMetastorePath, hbaseTable, znodeParent);
     log.info("Updated metastore at {} with table name {}", zkMetastorePath, hbaseTable);
   }
