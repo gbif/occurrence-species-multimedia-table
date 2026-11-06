@@ -201,7 +201,8 @@ public class OccurrenceSpecieMultiMediaTableBuilder {
       log.info("Current table in metastore: {}", currentTableName);
       mapMetastore.update(newTableName);
       log.info("Metastore at {} updated to new table: {}", zkNodePath, newTableName);
-      if (currentTableName != null && !currentTableName.isEmpty()) {
+      // A rerun with the same timestamp rebuilds the table the metastore already points to: don't drop it
+      if (currentTableName != null && !currentTableName.isEmpty() && !currentTableName.equals(newTableName)) {
         deleteHBaseTable(currentTableName, zkEnsemble, hbaseZNodeParent);
       }
     }
